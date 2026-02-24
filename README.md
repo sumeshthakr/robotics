@@ -71,30 +71,29 @@ pytest tests/ -v
 
 ## Results Summary
 
-### Approach 1: Sphere Fitting + Seam Template Matching
+### Approach 1: Sphere Fitting + Seam Template Matching (REFINED)
 
-**Status:** NOT WORKING with current setup
+**Status:** ✅ WORKING after refinements
 
-| Video | Detection Rate | Orientation Success |
-|-------|---------------|-------------------|
-| video1 | 4.1% (4/98 frames) | 0% |
-| video2 | 7.1% (6/85 frames) | 0% |
+| Video | Detection Rate | Orientation Rate | Avg Spin Rate |
+|-------|---------------|------------------|---------------|
+| video1 | 50.0% (49/98) | 46.9% (46/98) | 593 RPM |
+| video2 | 54.1% (46/85) | 54.1% (46/85) | 637 RPM |
 
-**Issues:**
-- YOLOv8n (nano) model cannot reliably detect small baseballs
-- Ball is 75-130 pixels in 1700x1200 frame (~5% of image)
-- Pretrained COCO model not optimized for baseball
-- Without ball detection, orientation estimation is impossible
+**Improvements from baseline:**
+- Lowered confidence threshold: 0.5 → 0.25
+- Added temporal ball tracking (velocity prediction)
+- Improved seam detection with adaptive thresholds + color boosting
 
-**See:** `docs/analysis/approach1-results.md` for detailed analysis
+**See:** `docs/analysis/refined-results.md` for detailed analysis
 
 ### Approach 3: Optical Flow
 
-**Status:** IN PROGRESS
+**Status:** PENDING
 
 ## Next Steps
 
-- [x] ~~Implement Approach 1~~ - Completed but ineffective
+- [x] ~~Implement Approach 1~~ - Completed and refined
 - [ ] Implement Approach 3 (Optical Flow)
 - [ ] Compare results between approaches
-- [ ] Fine-tune YOLO on baseball dataset (if results promising)
+- [ ] Fine-tune YOLO on baseball dataset
