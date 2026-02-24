@@ -14,6 +14,7 @@ import numpy as np
 import cv2
 
 from src.detection.ball_detector import BallDetector
+from src.detection.ball_tracker import BallTracker
 from src.preprocessing.undistort import undistort
 from src.seams.edge_detector import detect_seams
 from src.seams.seam_model import BaseballSeamModel
@@ -67,8 +68,13 @@ class BaseballOrientationPipeline:
             model_name=model_path,
             confidence_threshold=confidence_threshold
         )
+        self.ball_tracker = BallTracker(
+            detector=self.detector,
+            max_lost_frames=10,
+            iou_threshold=0.3
+        )
         self.seam_model = BaseballSeamModel(radius=ball_radius_mm)
-        self.tracker = OrientationTracker(window_size=10)
+        self.orientation_tracker = OrientationTracker(window_size=10)
 
         # Frame counter
         self._frame_count = 0
@@ -117,17 +123,18 @@ class BaseballOrientationPipeline:
             # If undistortion fails, use original image
             undistorted = image
 
-        # Step 2: Detect baseball
-        detection = self.detector.detect(undistorted)
-        if not detection["detected"]:
+        # Step 2: Track baseball (uses detector + temporal tracking)
+        track_result = self.ball_tracker.track(undistorted)
+        if not track_result["detected"]:
             return result
 
         result["ball_detected"] = True
-        result["bbox"] = detection["bbox"]
-        result["confidence"] = detection["confidence"]
+        result["bbox"] = track_result["bbox"]
+        result["confidence"] = track_result["confidence"]
+        result["tracking"] = track_result["tracking"]  # True if predicted, False if detected
 
         # Step 3: Extract ROI
-        x1, y1, x2, y2 = detection["bbox"]
+        x1, y1, x2, y2 = track_result["bbox"]
         roi = undistorted[y1:y2, x1:x2]
 
         if roi.size == 0:
@@ -136,7 +143,11 @@ class BaseballOrientationPipeline:
         # Step 4: Detect seams
         seam_result = detect_seams(roi)
 
-        if seam_result["num_pixels"] < 10:
+        # Calculate minimum seam pixels based on ROI size
+        roi_area = roi.shape[0] * roi.shape[1]
+        min_seam_pixels = max(4, int(roi_area * 0.01))  # At least 1% of ROI area
+
+        if seam_result["num_pixels"] < min_seam_pixels:
             # Not enough seam pixels for reliable orientation
             return result
 
@@ -160,14 +171,25 @@ class BaseballOrientationPipeline:
                 seam_pixels = seam_result["seam_pixels"]
                 global_seam_pixels = seam_pixels + np.array([x1, y1])
 
-                # Get 3D seam model points
+                # Get 3D seam model points - match number of detected points
+                num_detected = len(global_seam_pixels)
                 points_3d = self.seam_model.get_all_points()
 
+                # Sample 3D points to match detected points (repeat if needed)
+                if num_detected <= len(points_3d):
+                    # Use subset of 3D points
+                    indices = np.linspace(0, len(points_3d) - 1, num_detected, dtype=int)
+                    points_3d_sampled = points_3d[indices]
+                else:
+                    # Repeat 3D points to match (or could use all with correspondence)
+                    repeat_factor = (num_detected // len(points_3d)) + 1
+                    points_3d_sampled = np.tile(points_3d, (repeat_factor, 1))[:num_detected]
+
                 # Solve PnP
-                if len(global_seam_pixels) >= 4:
+                if num_detected >= 4:
                     pnp_result = solve_orientation(
                         global_seam_pixels,
-                        points_3d,
+                        points_3d_sampled,
                         self.camera_matrix
                     )
 
@@ -177,7 +199,7 @@ class BaseballOrientationPipeline:
 
                         # Update tracker
                         if timestamp is not None:
-                            self.tracker.add_orientation(R, timestamp)
+                            self.orientation_tracker.add_orientation(R, timestamp)
 
                         # Convert to quaternion
                         from src.estimation.pnp_solver import rotation_matrix_to_quaternion
@@ -194,8 +216,8 @@ class BaseballOrientationPipeline:
                         }
 
                         # Get spin info
-                        result["spin_rate"] = self.tracker.get_spin_rate()
-                        result["spin_axis"] = self.tracker.get_spin_axis()
+                        result["spin_rate"] = self.orientation_tracker.get_spin_rate()
+                        result["spin_axis"] = self.orientation_tracker.get_spin_axis()
 
         return result
 

@@ -41,8 +41,8 @@ def main():
     parser.add_argument(
         "--confidence",
         type=float,
-        default=0.5,
-        help="Detection confidence threshold 0-1 (default: 0.5)"
+        default=0.25,
+        help="Detection confidence threshold 0-1 (default: 0.25)"
     )
 
     args = parser.parse_args()
