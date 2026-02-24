@@ -560,6 +560,12 @@ class RotationEstimator:
             self.prev_bbox = bbox
 
             if result is not None:
+                # Add tracked features to result for visualization
+                result["tracked_features"] = {
+                    "prev_points": valid_prev,
+                    "curr_points": valid_curr
+                }
+
                 # Update accumulated rotation
                 self.current_rotation_matrix = result["rotation_matrix"]
                 self.accumulated_rotation = result["rotation_matrix"] @ self.accumulated_rotation

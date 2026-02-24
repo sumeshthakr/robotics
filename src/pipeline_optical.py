@@ -169,6 +169,10 @@ class OpticalFlowPipeline:
             gray, bbox, timestamp
         )
 
+        # Store tracked features for visualization
+        if rotation_result is not None and "tracked_features" in rotation_result:
+            result["tracked_features"] = rotation_result["tracked_features"]
+
         if rotation_result is None:
             # No rotation estimate yet (first frame or insufficient tracks)
             # Try to return smoothed result from history
@@ -301,7 +305,15 @@ class OpticalFlowPipeline:
         result: Dict[str, Any],
         frame_idx: int
     ) -> np.ndarray:
-        """Create visualization overlay on frame.
+        """Create comprehensive visualization overlay for optical flow approach.
+
+        Shows:
+        - Ball bounding box
+        - Tracked features (corners)
+        - Flow vectors
+        - Spin axis arrow
+        - Orientation info text
+        - Real-world coordinates
 
         Args:
             frame: Original frame
@@ -312,85 +324,172 @@ class OpticalFlowPipeline:
             Frame with visualization overlay
         """
         vis_frame = frame.copy()
+        h, w = vis_frame.shape[:2]
 
-        # Draw bounding box if ball detected
+        # Font settings
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        text_y = 25
+        line_height = 22
+
+        # ========== HEADER INFO ==========
+        cv2.putText(vis_frame, f"Frame: {frame_idx}", (10, text_y),
+                    font, font_scale, (255, 255, 255), thickness)
+        text_y += line_height
+
+        # ========== BALL DETECTION ==========
         if result["ball_detected"] and result["bbox"] is not None:
             x1, y1, x2, y2 = result["bbox"]
+            bbox_w = x2 - x1
+            bbox_h = y2 - y1
+            bbox_cx = (x1 + x2) // 2
+            bbox_cy = (y1 + y2) // 2
 
-            # Color based on tracking status
-            color = (255, 0, 0) if result.get("tracking", False) else (0, 255, 0)
+            # Draw bounding box
+            color = (255, 255, 0) if not result.get("tracking", False) else (0, 255, 255)
             cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
 
-            # Draw confidence text
-            conf = result.get("confidence", 0)
-            cv2.putText(
-                vis_frame,
-                f"Conf: {conf:.2f}",
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                1
-            )
+            # Draw ball center
+            cv2.circle(vis_frame, (bbox_cx, bbox_cy), 5, (255, 0, 0), -1)
+            cv2.circle(vis_frame, (bbox_cx, bbox_cy), 3, (255, 255, 255), 1)
 
-        # Draw orientation info if available
-        info_y = 30
-        info_texts = [f"Frame: {frame_idx}"]
+            # Pixel coordinates
+            cv2.putText(vis_frame, f"Ball Center (px): ({bbox_cx}, {bbox_cy})",
+                        (10, text_y), font, font_scale * 0.5, (0, 255, 0), 1)
+            text_y += line_height
 
-        if result["flow_confidence"] is not None:
-            info_texts.append(f"Flow Conf: {result['flow_confidence']:.2f}")
+            # ========== FEATURE TRACKING VISUALIZATION ==========
+            if result.get("tracked_features") is not None:
+                tracked = result["tracked_features"]
+                # Draw flow vectors
+                for p1, p2 in zip(tracked["prev_points"], tracked["curr_points"]):
+                    p1 = tuple(p1.astype(int))
+                    p2 = tuple(p2.astype(int))
+                    # Draw flow vector
+                    cv2.arrowedLine(vis_frame, p1, p2, (255, 255, 0), 1, tipLength=0.3)
 
-        if result["spin_rate"] is not None:
-            info_texts.append(f"Spin: {result['spin_rate']:.1f} RPM")
+                cv2.putText(vis_frame, f"Tracked Features: {len(tracked['prev_points'])}",
+                            (10, text_y), font, font_scale * 0.5, (255, 255, 0), 1)
+                text_y += line_height
 
-        if result["spin_axis"] is not None:
-            axis = result["spin_axis"]
-            info_texts.append(f"Axis: [{axis[0]:.2f}, {axis[1]:.2f}, {axis[2]:.2f}]")
+            # ========== ORIENTATION INFO ==========
+            if result["orientation"] is not None:
+                orient = result["orientation"]
+                R = orient["rotation_matrix"]
+                quat = orient["quaternion"]
+                euler = orient["euler_angles"]
 
-        # Draw method indicator
-        cv2.putText(
-            vis_frame,
-            "Method: Optical Flow",
-            (10, info_y + 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 0),
-            2
-        )
+                # Quaternion
+                cv2.putText(vis_frame, f"Quat: [{quat[0]:.2f}, {quat[1]:.2f}, {quat[2]:.2f}, {quat[3]:.2f}]",
+                            (10, text_y), font, font_scale * 0.5, (255, 200, 0), 1)
+                text_y += line_height
 
-        for i, text in enumerate(info_texts):
-            cv2.putText(
-                vis_frame,
-                text,
-                (10, info_y + i * 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2
-            )
+                # Euler angles (in degrees)
+                euler_deg = np.degrees(euler)
+                cv2.putText(vis_frame, f"Euler: [{euler_deg[0]:.1f}, {euler_deg[1]:.1f}, {euler_deg[2]:.1f}] deg",
+                            (10, text_y), font, font_scale * 0.5, (255, 200, 0), 1)
+                text_y += line_height
 
-        # Draw spin axis visualization if available
-        if result["spin_axis"] is not None and result["bbox"] is not None:
-            x1, y1, x2, y2 = result["bbox"]
-            cx = (x1 + x2) // 2
-            cy = (y1 + y2) // 2
-            radius = min(x2 - x1, y2 - y1) // 2
+            # ========== SPIN RATE ==========
+            if result["spin_rate"] is not None:
+                spin_text = f"Spin Rate: {result['spin_rate']:.1f} RPM"
+                cv2.putText(vis_frame, spin_text, (10, text_y),
+                            font, font_scale, (0, 255, 255), thickness)
+                text_y += line_height
 
-            axis = result["spin_axis"]
+            # ========== SPIN AXIS ==========
+            if result["spin_axis"] is not None:
+                axis = result["spin_axis"]
 
-            # Project 3D axis to 2D (simple projection)
-            axis_length = radius * 1.5
-            axis_end_x = int(cx + axis[0] * axis_length)
-            axis_end_y = int(cy + axis[1] * axis_length)
+                # Draw spin axis arrow from ball center
+                axis_length = 60  # pixels
+                end_x = int(bbox_cx + axis[0] * axis_length)
+                end_y = int(bbox_cy + axis[1] * axis_length)
 
-            # Draw axis line
-            cv2.arrowedLine(
-                vis_frame,
-                (cx, cy),
-                (axis_end_x, axis_end_y),
-                (0, 0, 255),
-                3,
-                tipLength=0.3
-            )
+                cv2.arrowedLine(vis_frame, (bbox_cx, bbox_cy), (end_x, end_y),
+                               (255, 0, 255), 4, tipLength=0.3)
+
+                # Axis label
+                cv2.putText(vis_frame, f"Axis: [{axis[0]:.2f}, {axis[1]:.2f}, {axis[2]:.2f}]",
+                            (bbox_cx + 10, bbox_cy - 10), font, font_scale * 0.5,
+                            (255, 0, 255), 1)
+
+            # ========== REAL-WORLD COORDINATES ==========
+            if self.camera_matrix is not None:
+                ball_radius_mm = self.ball_radius_mm
+                focal_length = self.camera_matrix[0, 0]
+                ball_radius_px = min(bbox_w, bbox_h) / 2
+
+                if ball_radius_px > 0:
+                    depth_mm = (focal_length * ball_radius_mm) / ball_radius_px
+
+                    cx_cam = self.camera_matrix[0, 2]
+                    cy_cam = self.camera_matrix[1, 2]
+
+                    real_x = (bbox_cx - cx_cam) * depth_mm / focal_length
+                    real_y = (bbox_cy - cy_cam) * depth_mm / focal_length
+                    real_z = depth_mm
+
+                    cv2.putText(vis_frame, f"Position (mm): X={real_x:.0f} Y={real_y:.0f} Z={real_z:.0f}",
+                                (10, text_y), font, font_scale * 0.5, (255, 200, 255), 1)
+                    text_y += line_height
+
+            # ========== CONFIDENCE ==========
+            if result.get("confidence") is not None:
+                conf = result["confidence"]
+                conf_color = (0, 255, 0) if conf > 0.5 else (0, 165, 255)
+                cv2.putText(vis_frame, f"Conf: {conf:.2f}",
+                            (10, text_y), font, font_scale * 0.5, conf_color, 1)
+                text_y += line_height
+
+            if result.get("flow_confidence") is not None:
+                flow_conf = result["flow_confidence"]
+                cv2.putText(vis_frame, f"Flow Conf: {flow_conf:.2f}",
+                            (10, text_y), font, font_scale * 0.5, (0, 200, 255), 1)
+                text_y += line_height
+
+            # Tracking status
+            if result.get("tracking") is not None:
+                track_status = "PREDICTED" if result["tracking"] else "DETECTED"
+                track_color = (255, 255, 0) if result["tracking"] else (0, 255, 0)
+                cv2.putText(vis_frame, f"Status: {track_status}",
+                            (10, text_y), font, font_scale * 0.5, track_color, 1)
+
+        else:
+            # No ball detected
+            cv2.putText(vis_frame, "NO BALL DETECTED", (10, text_y),
+                        font, font_scale, (0, 0, 255), thickness)
+
+        # ========== METHOD LABEL ==========
+        cv2.putText(vis_frame, "Method: Optical Flow",
+                    (10, h - 15), font, font_scale * 0.7, (255, 255, 0), 2)
+
+        # ========== LEGEND ==========
+        legend_y = h - 20
+        cv2.rectangle(vis_frame, (5, legend_y - 75), (220, legend_y), (0, 0, 0), -1)
+        cv2.rectangle(vis_frame, (5, legend_y - 75), (220, legend_y), (255, 255, 255), 1)
+
+        legend_y -= 55
+        cv2.putText(vis_frame, "LEGEND:", (10, legend_y), font, font_scale * 0.5,
+                    (255, 255, 255), 1)
+        legend_y += 15
+
+        # Ball box
+        cv2.rectangle(vis_frame, (10, legend_y - 5), (30, legend_y + 5), (0, 255, 0), -1)
+        cv2.putText(vis_frame, "Ball Box", (40, legend_y), font, font_scale * 0.4,
+                    (255, 255, 255), 1)
+        legend_y += 15
+
+        # Flow vectors
+        cv2.arrowedLine(vis_frame, (15, legend_y), (35, legend_y), (255, 255, 0), 2)
+        cv2.putText(vis_frame, "Flow Vector", (40, legend_y), font, font_scale * 0.4,
+                    (255, 255, 255), 1)
+        legend_y += 15
+
+        # Spin axis
+        cv2.arrowedLine(vis_frame, (15, legend_y), (35, legend_y), (255, 0, 255), 2)
+        cv2.putText(vis_frame, "Spin Axis", (40, legend_y), font, font_scale * 0.4,
+                    (255, 255, 255), 1)
 
         return vis_frame

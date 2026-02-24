@@ -143,6 +143,10 @@ class BaseballOrientationPipeline:
         # Step 4: Detect seams
         seam_result = detect_seams(roi)
 
+        # Store seam info for visualization
+        result["num_seam_pixels"] = seam_result["num_pixels"]
+        result["seam_pixels"] = seam_result["seam_pixels"]
+
         # Calculate minimum seam pixels based on ROI size
         roi_area = roi.shape[0] * roi.shape[1]
         min_seam_pixels = max(4, int(roi_area * 0.01))  # At least 1% of ROI area
@@ -304,7 +308,15 @@ class BaseballOrientationPipeline:
         result: Dict[str, Any],
         frame_idx: int
     ) -> np.ndarray:
-        """Create visualization overlay on frame.
+        """Create comprehensive visualization overlay on frame.
+
+        Shows:
+        - Ball bounding box (green)
+        - Detected seam points (red)
+        - Ball center (blue circle)
+        - Spin axis arrow
+        - Orientation info text
+        - Real-world coordinates
 
         Args:
             frame: Original frame
@@ -312,30 +324,162 @@ class BaseballOrientationPipeline:
             frame_idx: Frame number
 
         Returns:
-            Frame with visualization overlay
+            Frame with comprehensive visualization overlay
         """
         vis_frame = frame.copy()
+        h, w = vis_frame.shape[:2]
 
-        # Draw bounding box if ball detected
+        # Font settings
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 2
+        text_y = 25
+        line_height = 22
+
+        # ========== HEADER INFO ==========
+        cv2.putText(vis_frame, f"Frame: {frame_idx}", (10, text_y),
+                    font, font_scale, (255, 255, 255), thickness)
+        text_y += line_height
+
+        # ========== BALL DETECTION ==========
         if result["ball_detected"] and result["bbox"] is not None:
             x1, y1, x2, y2 = result["bbox"]
-            cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            bbox_w = x2 - x1
+            bbox_h = y2 - y1
+            bbox_cx = (x1 + x2) // 2
+            bbox_cy = (y1 + y2) // 2
 
-        # Draw orientation info if available
-        if result["orientation"] is not None:
-            info_text = f"Frame: {frame_idx}"
-            if result["spin_rate"] is not None:
-                info_text += f" | Spin: {result['spin_rate']:.1f} RPM"
+            # Draw bounding box
+            color = (0, 255, 0) if not result.get("tracking", False) else (255, 255, 0)
+            cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
 
-            cv2.putText(
-                vis_frame,
-                info_text,
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
+            # Draw ball center
+            cv2.circle(vis_frame, (bbox_cx, bbox_cy), 5, (255, 0, 0), -1)
+            cv2.circle(vis_frame, (bbox_cx, bbox_cy), 3, (255, 255, 255), 1)
+
+            # Pixel coordinates
+            cv2.putText(vis_frame, f"Ball Center (px): ({bbox_cx}, {bbox_cy})",
+                        (10, text_y), font, font_scale * 0.5, (0, 255, 0), 1)
+            text_y += line_height
+
+            # ========== SEAM VISUALIZATION ==========
+            if result.get("seam_pixels") is not None and len(result["seam_pixels"]) > 0:
+                # Draw seam points
+                for px, py in result["seam_pixels"][:]:  # Limit to avoid clutter
+                    global_x = int(px + x1)
+                    global_y = int(py + y1)
+                    if 0 <= global_x < w and 0 <= global_y < h:
+                        cv2.circle(vis_frame, (global_x, global_y), 1, (0, 0, 255), -1)
+
+                num_pixels = result.get("num_pixels", len(result["seam_pixels"]))
+                cv2.putText(vis_frame, f"Seam Pixels: {num_pixels}",
+                            (10, text_y), font, font_scale * 0.5, (0, 0, 255), 1)
+                text_y += line_height
+
+            # ========== ORIENTATION INFO ==========
+            if result["orientation"] is not None:
+                orient = result["orientation"]
+                R = orient["rotation_matrix"]
+                quat = orient["quaternion"]
+                euler = orient["euler_angles"]
+
+                # Quaternion
+                cv2.putText(vis_frame, f"Quat: [{quat[0]:.2f}, {quat[1]:.2f}, {quat[2]:.2f}, {quat[3]:.2f}]",
+                            (10, text_y), font, font_scale * 0.5, (255, 200, 0), 1)
+                text_y += line_height
+
+                # Euler angles (in degrees)
+                euler_deg = np.degrees(euler)
+                cv2.putText(vis_frame, f"Euler: [{euler_deg[0]:.1f}, {euler_deg[1]:.1f}, {euler_deg[2]:.1f}] deg",
+                            (10, text_y), font, font_scale * 0.5, (255, 200, 0), 1)
+                text_y += line_height
+
+                # ========== SPIN RATE ==========
+                if result["spin_rate"] is not None:
+                    spin_text = f"Spin Rate: {result['spin_rate']:.1f} RPM"
+                    cv2.putText(vis_frame, spin_text, (10, text_y),
+                                font, font_scale, (0, 255, 255), thickness)
+                    text_y += line_height
+
+                # ========== SPIN AXIS ==========
+                if result["spin_axis"] is not None:
+                    axis = result["spin_axis"]
+
+                    # Draw spin axis arrow from ball center
+                    axis_length = 60  # pixels
+                    end_x = int(bbox_cx + axis[0] * axis_length)
+                    end_y = int(bbox_cy + axis[1] * axis_length)
+
+                    cv2.arrowedLine(vis_frame, (bbox_cx, bbox_cy), (end_x, end_y),
+                                   (255, 0, 255), 4, tipLength=0.3)
+
+                    # Axis label
+                    cv2.putText(vis_frame, f"Axis: [{axis[0]:.2f}, {axis[1]:.2f}, {axis[2]:.2f}]",
+                                (bbox_cx + 10, bbox_cy - 10), font, font_scale * 0.5,
+                                (255, 0, 255), 1)
+
+                    # Real-world coordinates calculation
+                    # Using camera matrix to compute depth from ball size
+                    # Known baseball diameter = 73mm (37mm radius)
+                    ball_radius_mm = self.ball_radius_mm
+                    focal_length = self.camera_matrix[0, 0]  # fx
+
+                    # Approximate depth from ball size in pixels
+                    ball_radius_px = min(bbox_w, bbox_h) / 2
+                    if ball_radius_px > 0:
+                        depth_mm = (focal_length * ball_radius_mm) / ball_radius_px
+
+                        # Convert pixel center to real-world coordinates
+                        # Using camera calibration: X = (u - cx) * Z / fx
+                        cx_cam = self.camera_matrix[0, 2]
+                        cy_cam = self.camera_matrix[1, 2]
+
+                        real_x = (bbox_cx - cx_cam) * depth_mm / focal_length
+                        real_y = (bbox_cy - cy_cam) * depth_mm / focal_length
+                        real_z = depth_mm  # Z is depth
+
+                        cv2.putText(vis_frame, f"Position (mm): X={real_x:.0f} Y={real_y:.0f} Z={real_z:.0f}",
+                                    (10, text_y), font, font_scale * 0.5, (255, 200, 255), 1)
+                        text_y += line_height
+
+            # Confidence
+            if result["confidence"] is not None:
+                conf_color = (0, 255, 0) if result["confidence"] > 0.5 else (0, 165, 255)
+                cv2.putText(vis_frame, f"Conf: {result['confidence']:.2f}",
+                            (10, text_y), font, font_scale * 0.5, conf_color, 1)
+                text_y += line_height
+
+        else:
+            # No ball detected
+            cv2.putText(vis_frame, "NO BALL DETECTED", (10, text_y),
+                        font, font_scale, (0, 0, 255), thickness)
+
+        # ========== LEGEND ==========
+        legend_y = h - 20
+        cv2.rectangle(vis_frame, (5, legend_y - 75), (200, legend_y), (0, 0, 0), -1)
+        cv2.rectangle(vis_frame, (5, legend_y - 75), (200, legend_y), (255, 255, 255), 1)
+
+        legend_y -= 55
+        cv2.putText(vis_frame, "LEGEND:", (10, legend_y), font, font_scale * 0.5,
+                    (255, 255, 255), 1)
+        legend_y += 15
+
+        # Ball box
+        cv2.rectangle(vis_frame, (10, legend_y - 5), (30, legend_y + 5), (0, 255, 0), -1)
+        cv2.putText(vis_frame, "Ball Box", (40, legend_y), font, font_scale * 0.4,
+                    (255, 255, 255), 1)
+        legend_y += 15
+
+        # Seam points
+        cv2.circle(vis_frame, (20, legend_y), 3, (0, 0, 255), -1)
+        cv2.putText(vis_frame, "Seam Point", (40, legend_y), font, font_scale * 0.4,
+                    (255, 255, 255), 1)
+        legend_y += 15
+
+        # Spin axis
+        cv2.arrowedLine(vis_frame, (15, legend_y), (35, legend_y), (255, 0, 255), 2)
+        cv2.putText(vis_frame, "Spin Axis", (40, legend_y), font, font_scale * 0.4,
+                    (255, 255, 255), 1)
 
         return vis_frame
 
@@ -343,4 +487,4 @@ class BaseballOrientationPipeline:
         """Reset pipeline state (frame counter and tracker history)."""
         self._frame_count = 0
         self._last_timestamp = None
-        self.tracker = OrientationTracker(window_size=10)
+        self.orientation_tracker = OrientationTracker(window_size=10)
