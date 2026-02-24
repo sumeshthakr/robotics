@@ -69,8 +69,32 @@ The pipeline generates:
 pytest tests/ -v
 ```
 
+## Results Summary
+
+### Approach 1: Sphere Fitting + Seam Template Matching
+
+**Status:** NOT WORKING with current setup
+
+| Video | Detection Rate | Orientation Success |
+|-------|---------------|-------------------|
+| video1 | 4.1% (4/98 frames) | 0% |
+| video2 | 7.1% (6/85 frames) | 0% |
+
+**Issues:**
+- YOLOv8n (nano) model cannot reliably detect small baseballs
+- Ball is 75-130 pixels in 1700x1200 frame (~5% of image)
+- Pretrained COCO model not optimized for baseball
+- Without ball detection, orientation estimation is impossible
+
+**See:** `docs/analysis/approach1-results.md` for detailed analysis
+
+### Approach 3: Optical Flow
+
+**Status:** IN PROGRESS
+
 ## Next Steps
 
+- [x] ~~Implement Approach 1~~ - Completed but ineffective
 - [ ] Implement Approach 3 (Optical Flow)
 - [ ] Compare results between approaches
-- [ ] Fine-tune YOLO on baseball dataset
+- [ ] Fine-tune YOLO on baseball dataset (if results promising)
