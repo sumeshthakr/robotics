@@ -9,8 +9,13 @@ class BallDetector:
 
         Args:
             model_name: YOLO model name or path
-            confidence_threshold: Minimum confidence for detection
+            confidence_threshold: Minimum confidence for detection (0-1)
+
+        Raises:
+            ValueError: If confidence_threshold is not between 0 and 1
         """
+        if not 0 <= confidence_threshold <= 1:
+            raise ValueError(f"confidence_threshold must be between 0 and 1, got {confidence_threshold}")
         self.model = YOLO(model_name)
         self.confidence_threshold = confidence_threshold
         # Sports ball class index in COCO is 32
@@ -27,11 +32,23 @@ class BallDetector:
                 - detected: bool
                 - bbox: (x1, y1, x2, y2) or None
                 - confidence: float or None
+
+        Raises:
+            TypeError: If image is not a numpy array
+            ValueError: If image does not have 3 dimensions
         """
+        if not isinstance(image, np.ndarray):
+            raise TypeError(f"image must be a numpy array, got {type(image).__name__}")
+        if image.ndim != 3:
+            raise ValueError(f"image must have 3 dimensions (H, W, C), got {image.ndim} dimensions")
+
         results = self.model(image, verbose=False)
 
+        # Default result when no ball is detected
+        no_detection_result = {"detected": False, "bbox": None, "confidence": None}
+
         if len(results) == 0 or len(results[0].boxes) == 0:
-            return {"detected": False, "bbox": None, "confidence": None}
+            return no_detection_result
 
         # Get the most confident detection for sports ball
         best_box = None
@@ -54,4 +71,4 @@ class BallDetector:
                 "confidence": best_conf
             }
 
-        return {"detected": False, "bbox": None, "confidence": None}
+        return no_detection_result
