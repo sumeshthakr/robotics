@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Generate 3D ball trajectory and orientation visualizations.
 
-Creates 3 figures per video (6 total):
+Creates 2 figures per video (4 total for 2 videos):
   1. Detected 3D ball path (from bounding box + camera geometry)
   2. Seam approach: 3D path with orientation arrows
-  3. Optical flow approach: 3D path with orientation arrows
 
 Ball 3D position is recovered from the bounding box using the pinhole model:
     Z = fx * D_real / D_pixel
@@ -22,7 +21,6 @@ from mpl_toolkits.mplot3d import Axes3D
 
 from camera import load_camera_params
 from seam_pipeline import SeamPipeline
-from optical_pipeline import OpticalFlowPipeline
 
 BALL_DIAMETER_MM = 74.0
 BALL_RADIUS_MM = 37.0
@@ -55,19 +53,17 @@ def bbox_to_3d(bbox, K):
 
 
 def process_video(video_path, K, dist):
-    """Run both pipelines and collect 3D positions + orientations."""
+    """Run seam pipeline and collect 3D positions + orientations."""
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     seam_pipe = SeamPipeline(K, dist, confidence=0.25)
-    opt_pipe = OpticalFlowPipeline(K, dist, confidence=0.25)
 
     # Storage: lists of dicts per frame
     data = {
         "detected_path": [],   # Raw 3D positions from bbox
         "seam": [],            # Seam approach: position + orientation
-        "optical": [],         # Optical approach: position + orientation
         "fps": fps,
         "total_frames": total,
     }
@@ -80,9 +76,8 @@ def process_video(video_path, K, dist):
         ts = frame_idx / fps
 
         sr = seam_pipe.process_frame(frame.copy(), ts)
-        opr = opt_pipe.process_frame(frame.copy(), ts)
 
-        # Detected 3D position (from whichever detected - they share YOLO)
+        # Detected 3D position
         if sr["ball_detected"] and sr["bbox"]:
             X, Y, Z = bbox_to_3d(sr["bbox"], K)
             data["detected_path"].append({
@@ -101,18 +96,6 @@ def process_video(video_path, K, dist):
             if sr["spin_rate"] is not None:
                 entry["spin_rate"] = sr["spin_rate"]
             data["seam"].append(entry)
-
-        # Optical flow approach
-        if opr["ball_detected"] and opr["bbox"]:
-            X, Y, Z = bbox_to_3d(opr["bbox"], K)
-            entry = {"frame": frame_idx, "t": ts, "X": X, "Y": Y, "Z": Z}
-            if opr["orientation"] is not None:
-                entry["R"] = opr["orientation"]["rotation_matrix"]
-            if opr["spin_axis"] is not None:
-                entry["spin_axis"] = opr["spin_axis"]
-            if opr["spin_rate"] is not None:
-                entry["spin_rate"] = opr["spin_rate"]
-            data["optical"].append(entry)
 
         frame_idx += 1
 
@@ -168,7 +151,7 @@ def plot_detected_path(data, video_label, output_path):
 
 def plot_orientation_path(data, approach_key, approach_label, video_label,
                           output_path, color_main, color_arrow):
-    """Plot 2/3: 3D path with orientation arrows from one approach."""
+    """Plot 2: 3D path with orientation arrows from seam approach."""
     fig = plt.figure(figsize=(12, 9))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -276,7 +259,6 @@ def main():
 
         print(f"  Detected: {len(data['detected_path'])} frames")
         print(f"  Seam: {len(data['seam'])} frames")
-        print(f"  Optical: {len(data['optical'])} frames")
 
         # Plot 1: Raw detected path
         plot_detected_path(
@@ -288,12 +270,6 @@ def main():
             data, "seam", "Seam-Based Approach", label,
             os.path.join(OUTPUT_DIR, f"{tag}_seam_orientation.png"),
             color_main='#E74C3C', color_arrow='#C0392B')
-
-        # Plot 3: Optical flow approach path + orientation
-        plot_orientation_path(
-            data, "optical", "Optical Flow Approach", label,
-            os.path.join(OUTPUT_DIR, f"{tag}_optical_orientation.png"),
-            color_main='#3498DB', color_arrow='#2980B9')
 
     print(f"\nAll plots saved to {OUTPUT_DIR}/")
 
