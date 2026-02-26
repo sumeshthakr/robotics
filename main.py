@@ -1,82 +1,50 @@
 #!/usr/bin/env python3
-"""Main entry point for baseball orientation detection system."""
+"""Baseball Orientation Detection — Main Entry Point
+
+Detects baseball orientation from high-speed video using either:
+  - Seam-based approach:    detect red seams → 3D model matching → PnP solve
+  - Optical flow approach:  track surface features → estimate rotation
+
+Usage:
+    python main.py video.mp4 --visualize
+    python main.py video.mp4 --approach optical --visualize
+"""
 import argparse
 from pathlib import Path
-from src.utils.camera import load_camera_params
-from src.pipeline import BaseballOrientationPipeline
-from src.pipeline_optical import OpticalFlowPipeline
+from camera import load_camera_params
+from seam_pipeline import SeamPipeline
+from optical_pipeline import OpticalFlowPipeline
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Detect baseball orientation from video"
-    )
-    parser.add_argument(
-        "video_path",
-        type=str,
-        help="Path to input video file"
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="outputs/results",
-        help="Output directory for results (default: outputs/results)"
-    )
-    parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="Generate video with visualization overlays"
-    )
-    parser.add_argument(
-        "--camera",
-        type=str,
-        default="config/camera.json",
-        help="Path to camera parameters JSON (default: config/camera.json)"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="yolov8n.pt",
-        help="YOLO model path or name (default: yolov8n.pt)"
-    )
-    parser.add_argument(
-        "--confidence",
-        type=float,
-        default=0.25,
-        help="Detection confidence threshold 0-1 (default: 0.25)"
-    )
-    parser.add_argument(
-        "--approach",
-        type=str,
-        choices=["seam", "optical"],
-        default="seam",
-        help="Orientation detection approach: 'seam' (seam detection + PnP) or 'optical' (optical flow) (default: seam)"
-    )
-    parser.add_argument(
-        "--max-corners",
-        type=int,
-        default=50,
-        help="Maximum corners for optical flow tracking (only for --approach optical, default: 50)"
-    )
-    parser.add_argument(
-        "--min-flow",
-        type=float,
-        default=0.5,
-        help="Minimum flow magnitude threshold for optical flow (default: 0.5)"
-    )
-    parser.add_argument(
-        "--max-flow",
-        type=float,
-        default=30.0,
-        help="Maximum flow magnitude threshold for optical flow (default: 30.0)"
-    )
+    parser = argparse.ArgumentParser(description="Baseball Orientation Detection")
+    parser.add_argument("video_path", help="Path to input video file")
+    parser.add_argument("--output", default="outputs/results",
+                        help="Output directory (default: outputs/results)")
+    parser.add_argument("--visualize", action="store_true",
+                        help="Save annotated output video")
+    parser.add_argument("--camera", default="config/camera.json",
+                        help="Camera parameters JSON (default: config/camera.json)")
+    parser.add_argument("--model", default="yolov8n.pt",
+                        help="YOLO model path (default: yolov8n.pt)")
+    parser.add_argument("--confidence", type=float, default=0.25,
+                        help="Detection confidence threshold 0-1 (default: 0.25)")
+    parser.add_argument("--approach", choices=["seam", "optical"], default="seam",
+                        help="Approach: seam (default) or optical flow")
+    # Optical flow specific options
+    parser.add_argument("--max-corners", type=int, default=50,
+                        help="Max corners for optical flow (default: 50)")
+    parser.add_argument("--min-flow", type=float, default=0.5,
+                        help="Min flow magnitude in pixels (default: 0.5)")
+    parser.add_argument("--max-flow", type=float, default=30.0,
+                        help="Max flow magnitude in pixels (default: 30.0)")
 
     args = parser.parse_args()
 
-    # Validate video file exists
+    # Validate input video exists
     video_path = Path(args.video_path)
     if not video_path.exists():
-        print(f"Error: Video file not found: {args.video_path}")
+        print(f"Error: Video not found: {args.video_path}")
         return 1
 
     # Create output directory
@@ -84,72 +52,61 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load camera parameters
-    print(f"Loading camera parameters from {args.camera}")
+    print(f"Loading camera from {args.camera}")
     try:
         K, dist, img_shape = load_camera_params(args.camera)
-        print(f"  Camera matrix: {K.shape}")
-        print(f"  Image shape: {img_shape}")
+        print(f"  Camera matrix: {K.shape}, Image shape: {img_shape}")
     except Exception as e:
         print(f"Error loading camera parameters: {e}")
         return 1
 
-    # Initialize pipeline based on approach
+    # Create pipeline
     approach_name = "seam-based" if args.approach == "seam" else "optical flow"
-    print(f"Initializing {approach_name} pipeline with {args.model}")
+    print(f"Using {approach_name} approach with {args.model}")
 
     if args.approach == "optical":
         pipeline = OpticalFlowPipeline(
-            camera_matrix=K,
-            dist_coeffs=dist,
-            confidence_threshold=args.confidence,
-            model_path=args.model,
-            max_corners=args.max_corners,
-            min_flow_threshold=args.min_flow,
-            max_flow_threshold=args.max_flow
+            K, dist, confidence=args.confidence, model_path=args.model,
+            max_corners=args.max_corners, min_flow=args.min_flow,
+            max_flow=args.max_flow
         )
-    else:  # default to seam-based
-        pipeline = BaseballOrientationPipeline(
-            camera_matrix=K,
-            dist_coeffs=dist,
-            confidence_threshold=args.confidence,
-            model_path=args.model
+    else:
+        pipeline = SeamPipeline(
+            K, dist, confidence=args.confidence, model_path=args.model
         )
 
     # Process video
-    print(f"Processing video: {args.video_path}")
-
     output_video_path = None
     if args.visualize:
         output_video_path = str(output_dir / f"{video_path.stem}_output.mp4")
-        print(f"  Writing visualization to: {output_video_path}")
+        print(f"  Output video: {output_video_path}")
+
+    print(f"Processing: {args.video_path}")
 
     try:
         results = pipeline.process_video(
-            str(video_path),
-            output_path=output_video_path,
-            visualize=args.visualize
+            str(video_path), output_video_path, args.visualize
         )
 
         # Print summary
-        print("\n=== Processing Complete ===")
+        total = results["total_frames"]
+        detections = sum(1 for r in results["detections"] if r["ball_detected"])
+        orientations = sum(1 for r in results["detections"]
+                          if r["orientation"] is not None)
+
+        print(f"\n=== Results ===")
         print(f"Approach: {approach_name}")
-        print(f"Total frames processed: {results['total_frames']}")
-        print(f"Video FPS: {results['fps']:.2f}")
+        print(f"Frames: {total} ({results['fps']:.1f} FPS)")
+        print(f"Ball detected: {detections}/{total} "
+              f"({100*detections/total:.1f}%)")
+        print(f"Orientation estimated: {orientations}/{total} "
+              f"({100*orientations/total:.1f}%)")
 
-        # Count detections
-        detections = sum(1 for r in results['detections'] if r['ball_detected'])
-        print(f"Frames with ball detected: {detections} ({100*detections/results['total_frames']:.1f}%)")
+        if args.approach == "optical" and results.get("average_confidence"):
+            print(f"Average flow confidence: "
+                  f"{results['average_confidence']:.3f}")
 
-        # Count orientations
-        orientations = sum(1 for r in results['detections'] if r['orientation'] is not None)
-        print(f"Frames with orientation: {orientations} ({100*orientations/results['total_frames']:.1f}%)")
-
-        # Print confidence for optical flow approach
-        if args.approach == "optical" and 'average_confidence' in results:
-            if results['average_confidence'] is not None:
-                print(f"Average flow confidence: {results['average_confidence']:.3f}")
-
-        if results['average_spin_rate'] is not None:
+        if results["average_spin_rate"] is not None:
             print(f"Average spin rate: {results['average_spin_rate']:.1f} RPM")
 
         if args.visualize:

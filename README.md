@@ -1,116 +1,81 @@
 # Baseball Orientation Detection
 
-Computer vision pipeline for detecting baseball orientation from high-speed video using seam patterns.
+Detect baseball 3D orientation from high-speed monocular camera video by analyzing seam patterns and surface motion.
 
-## Features
-
-- Ball detection using pretrained YOLOv8
-- Seam detection via edge detection and color filtering
-- 3D orientation estimation using PnP with seam model
-- Spin rate and spin axis computation
-- Multiple output formats: rotation matrix, quaternion, Euler angles
-
-## Installation
+## Quick Start
 
 ```bash
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-```
-
-## Usage
-
-```bash
-# Seam-based approach (default)
-python main.py video.mp4 --visualize
-
-# Optical flow approach
-python main.py video.mp4 --approach optical --visualize
-
-# Process spin dataset
-python main.py spin_dataset/raw_spin_video_*.mp4 --visualize
-```
-
-## Output
-
-The pipeline generates:
-- `results.json`: Per-frame orientation data
-- `outputs/viz/`: Visualization frames with overlays
-
-### Output Format
-
-```json
-{
-  "frame_number": 0,
-  "timestamp": 0.0,
-  "ball_detected": true,
-  "orientation_estimated": true,
-  "rotation_matrix": [[...]],
-  "quaternion": [w, x, y, z],
-  "euler_angles": [roll, pitch, yaw],
-  "spin_rate_rpm": 1500.5,
-  "spin_axis": [0.1, 0.2, 0.97]
-}
+# Run on a video (seam-based approach)
+python main.py spin_dataset/video1.mp4 --visualize
+# Run optical flow approach
+python main.py spin_dataset/video1.mp4 --approach optical --visualize
+# Side-by-side comparison of both approaches
+python compare.py
 ```
 
 ## Project Structure
 
 ```
-├── src/
-│   ├── detection/       # Ball detection and tracking
-│   ├── preprocessing/   # Image preprocessing
-│   ├── seams/          # Seam detection and 3D model
-│   ├── optical_flow/   # Optical flow rotation estimation
-│   ├── estimation/     # Orientation estimation (PnP)
-│   ├── tracking/       # Temporal orientation tracking
-│   └── utils/          # Camera utilities
-├── config/             # Camera parameters
-├── tests/              # Unit tests (80+ tests, all passing)
-└── main.py            # Entry point (supports both approaches)
+├── camera.py              # Camera calibration loading + undistortion
+├── detector.py            # YOLOv8 ball detection + velocity-based tracking
+├── orientation.py         # Rotation tracking, spin rate/axis, format conversions
+├── seam_pipeline.py       # Seam-based pipeline (detect seams → PnP → flow RPM)
+├── optical_pipeline.py    # Optical flow pipeline (feature tracking → RANSAC rotation)
+├── main.py                # CLI entry point
+├── compare.py             # Side-by-side comparison video generator
+├── test_all.py            # 44 unit tests (pytest)
+├── verify.py              # Verification against physical constraints
+├── REPORT.md              # Assignment report (Parts 1-3 answers)
+├── AI_COLLABORATION_LOG.md # AI usage documentation (Part 4)
+├── config/camera.json     # Camera intrinsic parameters
+├── spin_dataset/          # Input videos (2 spin demos, 30fps)
+├── outputs/               # Generated comparison videos, metrics, frames
+├── requirements.txt       # Python dependencies
+└── yolov8n.pt             # YOLOv8 nano model weights
 ```
 
-## Running Tests
+## Two Approaches
+
+### 1. Seam-Based (default)
+Detects red seam stitching via Canny edge detection + HSV color filtering, matches to a parametric 3D seam model, and solves PnP for absolute orientation. Spin rate is computed from optical flow tracking of seam pixels between frames.
+
+### 2. Optical Flow
+Tracks corner features on the ball surface using Lucas-Kanade optical flow, then estimates rotation from the flow pattern using the rigid-body equation **v = omega x r** with RANSAC.
+
+## Key Results
+
+| Metric | Video 1 | Video 2 |
+|--------|---------|---------|
+| Frames | 98 | 85 |
+| Ball Detection Rate | 45% | 48% |
+| Seam Avg Spin (RPM) | 67 | 170 |
+| Optical Avg Spin (RPM) | 54 | 82 |
+
+Both approaches produce physically plausible spin rates for hand-tossed baseballs (expected range: 50-800 RPM), well below the Nyquist limit of 900 RPM at 30fps.
+
+## Testing
 
 ```bash
-pytest tests/ -v
+# Unit tests (44 tests)
+pytest test_all.py -v
+
+# Verification against physical constraints
+python verify.py              # Full verification (includes video processing)
+python verify.py --quick      # Math/model checks only (fast)
 ```
 
-## Results Summary
+## Requirements
 
-### Approach Comparison
+- Python 3.10+
+- OpenCV 4.8+
+- ultralytics (YOLOv8)
+- NumPy, SciPy
+- See `requirements.txt` for complete list
 
-| Approach | Orientation Rate | Spin Rate | Winner |
-|----------|-----------------|-----------|--------|
-| **Seam (PnP)** | **50.5%** | **615 RPM** | ✅ |
-| **Optical Flow** | 45.6% | 470 RPM | - |
+## Deliverables
 
-**Seam Detection + PnP is recommended** for production use.
-
-**Detailed comparison:** `docs/analysis/approach-comparison.md`
-
-### Reusable Components
-
-Both approaches share these core modules:
-- `BallDetector` + `BallTracker` - Ball detection and temporal tracking
-- `load_camera_params()` - Camera calibration utilities
-- `OrientationTracker` - Spin rate/axis from rotation sequence
-
-### Code Snippets
-
-```python
-# Ball tracking (both approaches)
-from src.detection.ball_tracker import BallTracker
-tracker = BallTracker(detector, max_lost_frames=10)
-result = tracker.track(frame)  # Returns bbox with velocity prediction
-
-# Optical flow estimation
-from src.optical_flow.rotation_estimator import RotationEstimator
-estimator = RotationEstimator(camera_matrix=K)
-result = estimator.estimate_rotation(frame_gray, bbox, timestamp)
-```
-
-## Next Steps
-
-- [x] ~~Implement Approach 1~~ - Completed and refined
-- [x] ~~Implement Approach 3~~ - Completed
-- [x] ~~Compare results~~ - Seam approach wins
-- [ ] Fine-tune YOLO on baseball dataset
-- [ ] Implement hybrid approach (seam + optical flow fusion)
+1. **System Design Document**: See `REPORT.md` Part 1
+2. **Prototype Code**: This repository (modular 3-part pipeline)
+3. **AI Usage Report**: See `AI_COLLABORATION_LOG.md`
