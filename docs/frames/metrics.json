@@ -1,0 +1,48 @@
+{
+  "video1": {
+    "label": "video1",
+    "total_frames": 98,
+    "fps": 30.0,
+    "seam": {
+      "detection_count": 45,
+      "detection_rate_pct": 45.91836734693877,
+      "orientation_count": 43,
+      "orientation_rate_pct": 43.87755102040816
+    },
+    "optical": {
+      "detection_count": 45,
+      "detection_rate_pct": 45.91836734693877,
+      "orientation_count": 39,
+      "orientation_rate_pct": 39.795918367346935,
+      "avg_flow_confidence": 0.45315928685741
+    },
+    "saved_frames": {
+      "seam_best": "docs/frames/video1_seam_best.jpg",
+      "optical_best": "docs/frames/video1_optical_best.jpg",
+      "comparison": "docs/frames/video1_comparison.jpg"
+    }
+  },
+  "video2": {
+    "label": "video2",
+    "total_frames": 85,
+    "fps": 30.0,
+    "seam": {
+      "detection_count": 41,
+      "detection_rate_pct": 48.23529411764706,
+      "orientation_count": 41,
+      "orientation_rate_pct": 48.23529411764706
+    },
+    "optical": {
+      "detection_count": 41,
+      "detection_rate_pct": 48.23529411764706,
+      "orientation_count": 39,
+      "orientation_rate_pct": 45.88235294117647,
+      "avg_flow_confidence": 0.5794184653522994
+    },
+    "saved_frames": {
+      "seam_best": "docs/frames/video2_seam_best.jpg",
+      "optical_best": "docs/frames/video2_optical_best.jpg",
+      "comparison": "docs/frames/video2_comparison.jpg"
+    }
+  }
+}
