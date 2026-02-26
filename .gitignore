@@ -24,3 +24,4 @@ data/
 # Test frames
 frames_video1/
 frames_video2/
+.pytest_cache/
