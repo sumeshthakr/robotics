@@ -39,8 +39,6 @@ def score_seam_frame(result):
     score = result["num_seam_pixels"]
     if result["orientation"] is not None:
         score += 500
-    if result["spin_rate"] is not None:
-        score += 200
     return score
 
 
@@ -53,8 +51,6 @@ def score_optical_frame(result):
     score = tracked * 10
     if result["orientation"] is not None:
         score += 500
-    if result["spin_rate"] is not None:
-        score += 200
     conf = result.get("flow_confidence") or 0
     score += int(conf * 100)
     return score
@@ -98,11 +94,6 @@ def annotate_seam_frame(frame, result, frame_idx, video_label):
     ]
     if result.get("confidence"):
         info_lines.append((f"YOLO conf: {result['confidence']:.2f}", (180, 255, 180)))
-    if result["spin_rate"] is not None:
-        info_lines.append((f"Spin rate: {result['spin_rate']:.1f} RPM", (0, 255, 255)))
-    if result["spin_axis"] is not None:
-        ax = result["spin_axis"]
-        info_lines.append((f"Spin axis: ({ax[0]:.2f}, {ax[1]:.2f}, {ax[2]:.2f})", (200, 200, 255)))
     if result["orientation"]:
         e = np.degrees(result["orientation"]["euler_angles"])
         info_lines.append((f"Euler: [{e[0]:.1f}, {e[1]:.1f}, {e[2]:.1f}] deg",
@@ -166,11 +157,6 @@ def annotate_optical_frame(frame, result, frame_idx, video_label):
         info_lines.append((f"Tracked features: {len(tf['prev_points'])}", (100, 255, 255)))
     if result.get("confidence"):
         info_lines.append((f"YOLO conf: {result['confidence']:.2f}", (180, 255, 180)))
-    if result["spin_rate"] is not None:
-        info_lines.append((f"Spin rate: {result['spin_rate']:.1f} RPM", (0, 255, 255)))
-    if result["spin_axis"] is not None:
-        ax = result["spin_axis"]
-        info_lines.append((f"Spin axis: ({ax[0]:.2f}, {ax[1]:.2f}, {ax[2]:.2f})", (200, 200, 255)))
     if result.get("flow_confidence") is not None:
         info_lines.append((f"Flow conf: {result['flow_confidence']:.2f}", (100, 255, 200)))
     if result["orientation"]:
@@ -221,21 +207,19 @@ def make_comparison_frame(seam_frame, optical_frame, seam_result, opt_result,
     cv2.line(bar, (mid, 0), (mid, bar_h), (80, 80, 80), 1)
 
     # Seam stats
-    s_spin = f"{seam_result['spin_rate']:.0f} RPM" if seam_result.get("spin_rate") else "—"
     s_seam = str(seam_result.get("num_seam_pixels", 0))
-    cv2.putText(bar, f"SEAM: {s_seam} px | {s_spin}",
+    cv2.putText(bar, f"SEAM: {s_seam} px",
                 (10, 55), font, 0.55, (0, 200, 255), 1)
-    cv2.putText(bar, "Seam detection + PnP + Flow RPM",
+    cv2.putText(bar, "Seam detection + PnP",
                 (10, 80), font, 0.4, (150, 150, 150), 1)
 
     # Optical stats
-    o_spin = f"{opt_result['spin_rate']:.0f} RPM" if opt_result.get("spin_rate") else "—"
     tf = opt_result.get("tracked_features")
     o_pts = str(len(tf["prev_points"])) if tf else "0"
     o_conf = f"{opt_result['flow_confidence']:.2f}" if opt_result.get("flow_confidence") else "—"
-    cv2.putText(bar, f"OPTICAL: {o_pts} pts | {o_spin} | conf {o_conf}",
+    cv2.putText(bar, f"OPTICAL: {o_pts} pts | conf {o_conf}",
                 (mid + 10, 55), font, 0.55, (255, 200, 0), 1)
-    cv2.putText(bar, "Corner features + Lucas-Kanade + RANSAC RPM",
+    cv2.putText(bar, "Corner features + Lucas-Kanade",
                 (mid + 10, 80), font, 0.4, (150, 150, 150), 1)
 
     return np.vstack([combined, bar])
@@ -265,7 +249,7 @@ def process_video(video_path, label, K, dist):
     # Metrics
     seam_detections = seam_orientations = 0
     opt_detections = opt_orientations = 0
-    seam_spins, opt_spins, opt_confs = [], [], []
+    opt_confs = []
 
     frame_idx = 0
     while True:
@@ -283,15 +267,11 @@ def process_video(video_path, label, K, dist):
             seam_detections += 1
         if sr["orientation"] is not None:
             seam_orientations += 1
-        if sr.get("spin_rate") is not None:
-            seam_spins.append(sr["spin_rate"])
 
         if or_["ball_detected"]:
             opt_detections += 1
         if or_["orientation"] is not None:
             opt_orientations += 1
-        if or_.get("spin_rate") is not None:
-            opt_spins.append(or_["spin_rate"])
         if or_.get("flow_confidence") is not None:
             opt_confs.append(or_["flow_confidence"])
 
@@ -329,28 +309,20 @@ def process_video(video_path, label, K, dist):
             "detection_rate_pct": 100.0 * seam_detections / max(frame_idx, 1),
             "orientation_count": seam_orientations,
             "orientation_rate_pct": 100.0 * seam_orientations / max(frame_idx, 1),
-            "avg_spin_rpm": float(np.mean(seam_spins)) if seam_spins else None,
-            "median_spin_rpm": float(np.median(seam_spins)) if seam_spins else None,
-            "spin_samples": len(seam_spins),
         },
         "optical": {
             "detection_count": opt_detections,
             "detection_rate_pct": 100.0 * opt_detections / max(frame_idx, 1),
             "orientation_count": opt_orientations,
             "orientation_rate_pct": 100.0 * opt_orientations / max(frame_idx, 1),
-            "avg_spin_rpm": float(np.mean(opt_spins)) if opt_spins else None,
-            "median_spin_rpm": float(np.median(opt_spins)) if opt_spins else None,
-            "spin_samples": len(opt_spins),
             "avg_flow_confidence": float(np.mean(opt_confs)) if opt_confs else None,
         }
     }
 
-    s_rpm = metrics['seam']['avg_spin_rpm']
-    o_rpm = metrics['optical']['avg_spin_rpm']
     print(f"  [{label}] Seam: {seam_detections}/{frame_idx} detected, "
-          f"avg spin {f'{s_rpm:.1f} RPM' if s_rpm is not None else 'N/A'}")
+          f"{seam_orientations} orientation estimates")
     print(f"  [{label}] Optical: {opt_detections}/{frame_idx} detected, "
-          f"avg spin {f'{o_rpm:.1f} RPM' if o_rpm is not None else 'N/A'}")
+          f"{opt_orientations} orientation estimates")
 
     return {
         "best_seam": best_seam,
@@ -479,10 +451,8 @@ def main():
             ("Frames", "total_frames", None),
             ("Seam Detection %", "seam.detection_rate_pct", ".1f"),
             ("Seam Orientation %", "seam.orientation_rate_pct", ".1f"),
-            ("Seam Avg Spin (RPM)", "seam.avg_spin_rpm", ".1f"),
             ("Optical Detection %", "optical.detection_rate_pct", ".1f"),
             ("Optical Orientation %", "optical.orientation_rate_pct", ".1f"),
-            ("Optical Avg Spin (RPM)", "optical.avg_spin_rpm", ".1f"),
             ("Optical Avg Confidence", "optical.avg_flow_confidence", ".3f"),
         ]
         for name, key, fmt in rows:

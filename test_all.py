@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from camera import load_camera_params, undistort
 from detector import BallDetector, BallTracker
-from orientation import (OrientationTracker, rotation_to_quaternion,
+from orientation import (rotation_to_quaternion,
                          rotation_to_euler)
 from seam_pipeline import (detect_seams, BaseballSeamModel, solve_orientation,
                            SeamPipeline)
@@ -223,58 +223,6 @@ class TestPnPSolver:
 
 
 # ============================================================
-# Orientation Tracker Tests
-# ============================================================
-
-class TestOrientationTracker:
-    def test_init(self):
-        tracker = OrientationTracker()
-        assert len(tracker.history) == 0
-
-    def test_add(self):
-        tracker = OrientationTracker()
-        tracker.add(np.eye(3), 0.0)
-        assert len(tracker.history) == 1
-
-    def test_spin_rate_insufficient_data(self):
-        tracker = OrientationTracker()
-        assert tracker.get_spin_rate() is None
-        tracker.add(np.eye(3), 0.0)
-        assert tracker.get_spin_rate() is None
-
-    def test_spin_rate_known_rotation(self):
-        """90° rotation about Z in 0.1s = 150 RPM."""
-        from scipy.spatial.transform import Rotation
-        tracker = OrientationTracker()
-        R1 = Rotation.from_euler('z', 0).as_matrix()
-        R2 = Rotation.from_euler('z', np.pi / 2).as_matrix()
-        tracker.add(R1, 0.0)
-        tracker.add(R2, 0.1)
-
-        rpm = tracker.get_spin_rate()
-        assert rpm == pytest.approx(150.0, rel=0.1)
-
-    def test_spin_axis_z_rotation(self):
-        """Rotation about Z axis should give axis ≈ [0, 0, 1]."""
-        from scipy.spatial.transform import Rotation
-        tracker = OrientationTracker()
-        R1 = Rotation.from_euler('z', 0).as_matrix()
-        R2 = Rotation.from_euler('z', np.pi / 4).as_matrix()
-        tracker.add(R1, 0.0)
-        tracker.add(R2, 0.1)
-
-        axis = tracker.get_spin_axis()
-        assert np.allclose(axis[:2], [0, 0], atol=0.1)
-        assert abs(axis[2]) > 0.9
-
-    def test_window_size(self):
-        tracker = OrientationTracker(window_size=3)
-        for i in range(5):
-            tracker.add(np.eye(3), float(i))
-        assert len(tracker.history) == 3
-
-
-# ============================================================
 # Rotation Conversion Tests
 # ============================================================
 
@@ -392,10 +340,6 @@ class TestRotationEstimator:
         # At minimum, state should be initialized after processing frames
         assert estimator.prev_gray is not None
         assert estimator.prev_points is not None
-
-    def test_smoothed_rotation(self, estimator):
-        """After processing frames, smoothed rotation should be available."""
-        assert estimator.get_smoothed_rotation() is None  # No history yet
 
 
 # ============================================================

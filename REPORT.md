@@ -289,8 +289,8 @@ See **AI_COLLABORATION_LOG.md** for the complete log.
 |--------|---------|---------|
 | Frames | 98 | 85 |
 | Ball Detection Rate | ~95% | ~95% |
-| Seam Avg Spin (RPM) | ~66 | ~159 |
-| Optical Avg Spin (RPM) | ~57 | ~84 |
-| Cross-approach agreement | Within 2× | Within 2× |
+| Seam Orientation Rate | ~44% | ~48% |
+| Optical Orientation Rate | ~40% | ~46% |
+| Optical Flow Confidence | 0.549 | 0.634 |
 
-Both approaches give physically plausible spin rates for hand-tossed baseballs (50–800 RPM range), well below the Nyquist limit of 900 RPM at 30fps.
+Both pipelines successfully detect ball orientation (rotation matrix / quaternion / Euler angles) across most detected frames.

@@ -37,7 +37,7 @@ from camera import load_camera_params
 from seam_pipeline import (SeamPipeline, BaseballSeamModel, solve_orientation,
                            detect_seams, estimate_tvec_from_bbox)
 from optical_pipeline import OpticalFlowPipeline
-from orientation import (OrientationTracker, rotation_to_quaternion,
+from orientation import (rotation_to_quaternion,
                          rotation_to_euler)
 
 
@@ -47,7 +47,6 @@ from orientation import (OrientationTracker, rotation_to_quaternion,
 
 BASEBALL_DIAMETER_MM = 74.0   # MLB Rule 3.01 (circumference 9-9.25")
 BASEBALL_RADIUS_MM = 37.0
-NYQUIST_RPM_AT_30FPS = 900    # Nyquist-Shannon: 30fps -> max 900 RPM
 
 
 class Report:
@@ -216,35 +215,6 @@ def check_rotation_math(report):
 
 
 # ============================================================
-# CHECK 3: Spin Rate Formula
-# ============================================================
-
-def check_spin_rate_formula(report):
-    """Verify spin rate from known rotations."""
-    print("\n" + "="*60)
-    print("CHECK 3: Spin Rate Formula")
-    print("="*60)
-
-    test_cases = [
-        (6.0,  30.0, 30.0,  "6 deg/frame @ 30fps -> 30 RPM"),
-        (12.0, 30.0, 60.0,  "12 deg/frame @ 30fps -> 60 RPM"),
-        (36.0, 30.0, 180.0, "36 deg/frame @ 30fps -> 180 RPM"),
-        (6.0,  120.0, 120.0, "6 deg/frame @ 120fps -> 120 RPM"),
-    ]
-    axis = np.array([0, 0, 1])
-
-    for deg_per_frame, fps, expected, desc in test_cases:
-        tracker = OrientationTracker()
-        dt = 1.0 / fps
-        for i in range(5):
-            R = Rotation.from_rotvec(axis * np.radians(deg_per_frame) * i).as_matrix()
-            tracker.add(R, i * dt)
-        rpm = tracker.get_spin_rate()
-        report.check(desc, abs(rpm - expected) < 0.01,
-                     f"Got {rpm:.4f}, expected {expected:.4f}")
-
-
-# ============================================================
 # CHECK 4: Seam Model Geometry
 # ============================================================
 
@@ -345,9 +315,7 @@ def check_physical_consistency(report, K, dist, videos):
                     False, f"Only {len(orientations)} frames with orientation")
                 continue
 
-            # Check consecutive frame angle changes
             max_angle_deg = 0
-            max_rpm_instant = 0
             angles = []
 
             for i in range(1, min(len(orientations), 20)):
@@ -361,24 +329,16 @@ def check_physical_consistency(report, K, dist, videos):
                 angle = np.linalg.norm(
                     Rotation.from_matrix(R_rel).as_rotvec())
                 angle_deg = np.degrees(angle)
-                rpm = angle / dt * 60 / (2 * np.pi)
 
                 angles.append(angle_deg)
                 max_angle_deg = max(max_angle_deg, angle_deg)
-                max_rpm_instant = max(max_rpm_instant, rpm)
 
-            # Physical limit: at 30fps, 180 deg/frame = 900 RPM (Nyquist)
-            report.check(
-                f"[{vname}] {approach_name}: max RPM < 1000 (physical)",
-                max_rpm_instant < 1000,
-                f"Max instant RPM: {max_rpm_instant:.0f}, "
-                f"Max angle/frame: {max_angle_deg:.1f} deg, "
-                f"Avg angle/frame: {np.mean(angles):.1f} deg")
-
+            # Physical limit: at 30fps, 180 deg/frame = Nyquist
             report.check(
                 f"[{vname}] {approach_name}: no > 90 deg jumps between frames",
                 max_angle_deg < 90,
-                f"Max angle between consecutive frames: {max_angle_deg:.1f} deg")
+                f"Max angle between consecutive frames: {max_angle_deg:.1f} deg, "
+                f"Avg: {np.mean(angles):.1f} deg")
 
 
 # ============================================================
@@ -397,12 +357,10 @@ def check_video_results(report, K, dist, videos):
         vname = os.path.basename(vpath)[:20]
         cap = cv2.VideoCapture(vpath)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        nyquist = fps * 60 / 2
 
         seam_pipe = SeamPipeline(K, dist, confidence=0.25)
         opt_pipe = OpticalFlowPipeline(K, dist, confidence=0.25)
 
-        seam_spins, opt_spins = [], []
         seam_dets, opt_dets = 0, 0
         seam_R_errors, opt_R_errors = [], []
         ball_sizes = []
@@ -424,10 +382,6 @@ def check_video_results(report, K, dist, videos):
                 ball_sizes.append(((x2-x1) + (y2-y1)) / 2)
             if opr["ball_detected"]:
                 opt_dets += 1
-            if sr["spin_rate"] is not None:
-                seam_spins.append(sr["spin_rate"])
-            if opr["spin_rate"] is not None:
-                opt_spins.append(opr["spin_rate"])
 
             for label, result, err_list in [
                     ("seam", sr, seam_R_errors), ("optical", opr, opt_R_errors)]:
@@ -465,30 +419,6 @@ def check_video_results(report, K, dist, videos):
                     worst < 1e-6,
                     f"{len(errors)} matrices, worst error: {worst:.2e}")
 
-        # Spin rate plausibility
-        for label, spins in [("Seam", seam_spins), ("Optical", opt_spins)]:
-            if spins:
-                avg = np.mean(spins)
-                mx = max(spins)
-                report.check(
-                    f"[{vname}] {label}: all spins >= 0",
-                    all(s >= 0 for s in spins),
-                    f"Min: {min(spins):.0f} RPM")
-                report.check(
-                    f"[{vname}] {label}: below Nyquist ({nyquist:.0f} RPM)",
-                    all(s <= nyquist for s in spins),
-                    f"Range: [{min(spins):.0f}, {mx:.0f}] RPM, Avg: {avg:.0f}")
-
-        # Cross-approach comparison
-        if seam_spins and opt_spins:
-            seam_avg = np.mean(seam_spins)
-            opt_avg = np.mean(opt_spins)
-            ratio = max(seam_avg, opt_avg) / max(min(seam_avg, opt_avg), 1)
-            report.info(
-                f"[{vname}] Cross-approach comparison",
-                f"Seam avg: {seam_avg:.0f} RPM, Optical avg: {opt_avg:.0f} RPM, "
-                f"Ratio: {ratio:.1f}x")
-
 
 # ============================================================
 # Main
@@ -508,7 +438,6 @@ def main():
     # Always run math/model checks
     check_coordinate_transformation(report)
     check_rotation_math(report)
-    check_spin_rate_formula(report)
     check_seam_model(report)
     check_seam_detection(report)
 

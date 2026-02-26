@@ -26,7 +26,7 @@ import cv2
 
 from camera import undistort
 from detector import BallDetector, BallTracker
-from orientation import OrientationTracker, rotation_to_quaternion, rotation_to_euler
+from orientation import rotation_to_quaternion, rotation_to_euler
 
 
 # ============================================================
@@ -307,35 +307,18 @@ class SeamPipeline:
         self.detector = BallDetector(model_path, confidence)
         self.tracker = BallTracker(self.detector)
         self.seam_model = BaseballSeamModel(radius=ball_radius_mm)
-        self.orientation_tracker = OrientationTracker()
         self.frame_count = 0
 
-        # Pose tracking for PnP
+        # Pose tracking for PnP initialization
         self.prev_rvec = None
         self.prev_tvec = None
-
-        # Seam-based optical flow tracking for RPM
-        # PnP with approximate correspondences gives noisy orientations.
-        # Instead, we track seam pixels between frames with optical flow
-        # and estimate rotation from the flow pattern (same physics as
-        # optical_pipeline.py). This gives much more reliable RPM.
-        self.prev_gray = None          # Previous full-frame grayscale
-        self.prev_seam_pts = None      # Previous seam points (full-frame coords)
-        self.prev_bbox = None          # Previous bounding box
-        self.flow_accumulated_R = np.eye(3)  # Accumulated rotation from flow
-
-        # Lucas-Kanade parameters
-        self.lk_params = dict(
-            winSize=(15, 15), maxLevel=3,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
-        )
 
     def process_frame(self, image, timestamp=None):
         """Process a single video frame.
 
         Args:
             image:     BGR image (H, W, 3)
-            timestamp: Frame time in seconds (needed for spin rate)
+            timestamp: Frame time in seconds (unused, kept for API compatibility)
 
         Returns:
             dict with:
@@ -343,8 +326,6 @@ class SeamPipeline:
                 bbox:           (x1, y1, x2, y2) or None
                 confidence:     float or None
                 orientation:    dict with rotation_matrix, quaternion, euler_angles — or None
-                spin_rate:      RPM or None
-                spin_axis:      3D unit vector or None
                 frame_number:   int
                 timestamp:      float or None
                 seam_pixels:    Nx2 array or None
@@ -381,8 +362,6 @@ class SeamPipeline:
         if roi.size == 0:
             return result
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
         # Step 4: Detect seam pixels
         seam = detect_seams(roi)
         result["seam_pixels"] = seam["seam_pixels"]
@@ -391,50 +370,15 @@ class SeamPipeline:
         # Need minimum seam pixels for reliable results
         min_pixels = max(4, int(roi.shape[0] * roi.shape[1] * 0.01))
         if seam["num_pixels"] < min_pixels:
-            self.prev_gray = gray
-            self.prev_seam_pts = None
-            self.prev_bbox = track["bbox"]
             return result
 
         # Convert ROI coordinates → global image coordinates
         seam_2d = seam["seam_pixels"] + np.array([x1, y1])
 
-        # ============================================================
-        # Step 5: Spin rate from optical flow on seam features
-        # ============================================================
-        # PnP with approximate correspondences gives noisy orientations (±120°)
-        # which produces ~640 RPM of pure noise. Instead, we track seam pixels
-        # between frames using optical flow and compute rotation from the flow
-        # pattern. This measures actual surface motion, not correspondence noise.
-        flow_R = self._estimate_rotation_from_seam_flow(
-            gray, seam_2d, track["bbox"])
-        if flow_R is not None:
-            self.flow_accumulated_R = flow_R @ self.flow_accumulated_R
-            if timestamp is not None:
-                self.orientation_tracker.add(self.flow_accumulated_R, timestamp)
-            result["spin_rate"] = self.orientation_tracker.get_spin_rate()
-            result["spin_axis"] = self.orientation_tracker.get_spin_axis()
-
-        # Store seam points for next frame's flow tracking
-        # Subsample to ~50 points for efficient optical flow
-        if len(seam_2d) > 50:
-            idx = np.random.choice(len(seam_2d), 50, replace=False)
-            self.prev_seam_pts = seam_2d[idx].astype(np.float32).reshape(-1, 1, 2)
-        else:
-            self.prev_seam_pts = seam_2d.astype(np.float32).reshape(-1, 1, 2)
-        self.prev_gray = gray
-        self.prev_bbox = track["bbox"]
-
-        # ============================================================
-        # Step 6: Absolute orientation from PnP (for display only)
-        # ============================================================
-        # NOTE: This is still noisy due to approximate correspondences,
-        # but provides a rough absolute orientation estimate.
+        # Step 5: Solve for orientation using PnP
         model_3d = self.seam_model.generate_points(num_points_per_curve=200)
-        bbox_tvec = estimate_tvec_from_bbox(
+        init_tvec = estimate_tvec_from_bbox(
             track["bbox"], self.camera_matrix, self.ball_radius_mm)
-        init_rvec = self.prev_rvec
-        init_tvec = self.prev_tvec if self.prev_tvec is not None else bbox_tvec
 
         n = len(seam_2d)
         if n <= len(model_3d):
@@ -447,163 +391,27 @@ class SeamPipeline:
         if n >= 4:
             pnp = solve_orientation(
                 seam_2d, matched_3d, self.camera_matrix,
-                rvec_init=init_rvec, tvec_init=init_tvec
+                rvec_init=self.prev_rvec,
+                tvec_init=self.prev_tvec if self.prev_tvec is not None else init_tvec
             )
             if pnp["success"]:
                 self.prev_rvec = pnp["rvec"]
                 self.prev_tvec = pnp["tvec"]
-
-                # Use flow-accumulated R for orientation if available,
-                # fall back to PnP R
-                R_display = self.flow_accumulated_R if flow_R is not None \
-                    else pnp["rotation_matrix"]
+                R = pnp["rotation_matrix"]
                 result["orientation"] = {
-                    "rotation_matrix": R_display,
-                    "quaternion": rotation_to_quaternion(R_display),
-                    "euler_angles": rotation_to_euler(R_display)
+                    "rotation_matrix": R,
+                    "quaternion": rotation_to_quaternion(R),
+                    "euler_angles": rotation_to_euler(R)
                 }
 
         return result
 
-    def _estimate_rotation_from_seam_flow(self, gray, seam_2d_curr, bbox):
-        """Estimate rotation by tracking seam pixels between frames.
-
-        Uses Lucas-Kanade optical flow on the previous frame's seam pixels,
-        then RANSAC to fit a rotation model to the flow.
-
-        Same physics as optical_pipeline.py:
-            v = ω × r  →  solve linear system for ω
-
-        Args:
-            gray:          Current frame grayscale
-            seam_2d_curr:  Current frame seam pixels (full-frame coords)
-            bbox:          Current bounding box (x1, y1, x2, y2)
-
-        Returns:
-            3x3 rotation matrix, or None
-        """
-        if self.prev_gray is None or self.prev_seam_pts is None:
-            return None
-        if self.prev_bbox is None:
-            return None
-
-        # Track previous seam points into current frame
-        try:
-            curr_tracked, status, _ = cv2.calcOpticalFlowPyrLK(
-                self.prev_gray, gray, self.prev_seam_pts, None,
-                **self.lk_params
-            )
-        except cv2.error:
-            return None
-
-        # Filter valid tracks
-        x1, y1, x2, y2 = bbox
-        cx = (x1 + x2) / 2.0
-        cy = (y1 + y2) / 2.0
-        radius_px = min(x2 - x1, y2 - y1) / 2.0
-
-        valid_prev, valid_curr = [], []
-        for i in range(len(self.prev_seam_pts)):
-            if status[i] != 1:
-                continue
-            p1 = self.prev_seam_pts[i][0]
-            p2 = curr_tracked[i][0]
-
-            # Check bounds
-            if not (x1 <= p2[0] <= x2 and y1 <= p2[1] <= y2):
-                continue
-
-            flow_mag = np.linalg.norm(p2 - p1)
-            if flow_mag < 0.5 or flow_mag > 30.0:
-                continue
-
-            valid_prev.append(p1)
-            valid_curr.append(p2)
-
-        if len(valid_prev) < 4:
-            return None
-
-        prev_pts = np.array(valid_prev)
-        curr_pts = np.array(valid_curr)
-        flow = curr_pts - prev_pts
-
-        # Center relative to ball center
-        center = np.array([cx, cy], dtype=np.float64)
-        r_2d = prev_pts - center
-        r_sq = np.sum(r_2d ** 2, axis=1)
-        R_sq = radius_px ** 2
-
-        # Only use points on the sphere (inside ball circle)
-        valid = r_sq < R_sq * 0.95
-        if np.sum(valid) < 4:
-            return None
-
-        r_2d = r_2d[valid]
-        flow_v = flow[valid]
-        rz = np.sqrt(np.maximum(R_sq - r_sq[valid], 0))
-
-        # Build linear system: A @ omega = flow_flat (vectorized)
-        # For point i with position (rx, ry, rz):
-        #   vx =  ωy·rz - ωz·ry  →  row [0,  rz, -ry]
-        #   vy = -ωx·rz + ωz·rx  →  row [-rz, 0,  rx]
-        N = len(r_2d)
-        rx, ry = r_2d[:, 0], r_2d[:, 1]
-        A = np.zeros((2 * N, 3))
-        A[0::2, 1] = rz
-        A[0::2, 2] = -ry
-        A[1::2, 0] = -rz
-        A[1::2, 2] = rx
-        b = np.empty(2 * N)
-        b[0::2] = flow_v[:, 0]
-        b[1::2] = flow_v[:, 1]
-
-        # RANSAC
-        best_omega = None
-        best_inliers = 0
-        best_residuals = None
-
-        for _ in range(50):
-            idx = np.random.choice(N, min(3, N), replace=False)
-            rows = np.concatenate([[2*j, 2*j+1] for j in idx])
-            try:
-                omega, _, _, _ = np.linalg.lstsq(A[rows], b[rows], rcond=None)
-            except np.linalg.LinAlgError:
-                continue
-
-            predicted = A @ omega
-            residuals = np.sqrt((predicted[0::2] - b[0::2])**2 +
-                                (predicted[1::2] - b[1::2])**2)
-            inlier_mask = residuals < 5.0
-            inliers = np.sum(inlier_mask)
-
-            if inliers > best_inliers:
-                best_inliers = inliers
-                best_omega = omega
-                best_residuals = residuals
-
-        if best_inliers < 3 or best_omega is None:
-            return None
-
-        # Refit on inliers
-        inlier_mask = best_residuals < 5.0
-        inlier_rows = np.concatenate([[2*j, 2*j+1]
-                                       for j in range(N) if inlier_mask[j]])
-        try:
-            best_omega, _, _, _ = np.linalg.lstsq(
-                A[inlier_rows], b[inlier_rows], rcond=None)
-        except np.linalg.LinAlgError:
-            pass
-
-        angular_speed = np.linalg.norm(best_omega)
-        if angular_speed < 1e-8:
-            return None
-
-        axis = best_omega / angular_speed
-        angle = angular_speed
-
-        # Convert axis-angle to rotation matrix using OpenCV's Rodrigues
-        R, _ = cv2.Rodrigues((axis * angle).reshape(3, 1))
-        return R
+    def reset(self):
+        """Reset all pipeline state."""
+        self.frame_count = 0
+        self.tracker.reset()
+        self.prev_rvec = None
+        self.prev_tvec = None
 
     def process_video(self, video_path, output_path=None, visualize=False):
         """Process an entire video file.
@@ -614,11 +422,7 @@ class SeamPipeline:
             visualize:   If True, write visualization overlay to output_path
 
         Returns:
-            dict with:
-                total_frames:      int
-                fps:               float
-                detections:        list of per-frame results
-                average_spin_rate: float or None
+            dict with total_frames, fps, detections
         """
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video not found: {video_path}")
@@ -657,20 +461,15 @@ class SeamPipeline:
         if writer:
             writer.release()
 
-        spin_rates = [r["spin_rate"] for r in results if r["spin_rate"] is not None]
-
         return {
             "total_frames": frame_idx,
             "fps": fps,
             "detections": results,
-            "average_spin_rate": np.mean(spin_rates) if spin_rates else None
+            "average_spin_rate": None
         }
 
     def _visualize(self, frame, result, frame_idx):
-        """Draw detection and orientation results on the frame.
-
-        Shows: bounding box, seam pixels, orientation info, spin rate/axis.
-        """
+        """Draw detection and orientation results on the frame."""
         vis = frame.copy()
         h, w = vis.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -688,7 +487,6 @@ class SeamPipeline:
         x1, y1b, x2, y2b = result["bbox"]
         cx, cy = (x1 + x2) // 2, (y1b + y2b) // 2
 
-        # Bounding box (green = detected, yellow = predicted)
         color = (0, 255, 0) if not result.get("tracking") else (0, 255, 255)
         cv2.rectangle(vis, (x1, y1b), (x2, y2b), color, 2)
         cv2.circle(vis, (cx, cy), 4, (255, 0, 0), -1)
@@ -716,35 +514,8 @@ class SeamPipeline:
                         (10, y), font, 0.4, (255, 200, 0), 1)
             y += 18
 
-        # Spin rate
-        if result["spin_rate"] is not None:
-            cv2.putText(vis, f"Spin: {result['spin_rate']:.1f} RPM",
-                        (10, y), font, 0.6, (0, 255, 255), 2)
-            y += 22
-
-        # Spin axis arrow
-        if result["spin_axis"] is not None:
-            axis = result["spin_axis"]
-            end_x = int(cx + axis[0] * 60)
-            end_y = int(cy + axis[1] * 60)
-            cv2.arrowedLine(vis, (cx, cy), (end_x, end_y),
-                            (255, 0, 255), 3, tipLength=0.3)
-
-        # Detection confidence
         if result["confidence"] is not None:
             cv2.putText(vis, f"Conf: {result['confidence']:.2f}",
                         (10, y), font, 0.5, (0, 255, 0), 1)
 
         return vis
-
-    def reset(self):
-        """Reset all pipeline state."""
-        self.frame_count = 0
-        self.tracker.reset()
-        self.orientation_tracker = OrientationTracker()
-        self.prev_rvec = None
-        self.prev_tvec = None
-        self.prev_gray = None
-        self.prev_seam_pts = None
-        self.prev_bbox = None
-        self.flow_accumulated_R = np.eye(3)
