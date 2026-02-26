@@ -1,0 +1,60 @@
+{
+  "video1": {
+    "label": "video1",
+    "total_frames": 98,
+    "fps": 30.0,
+    "seam": {
+      "detection_count": 45,
+      "detection_rate_pct": 45.91836734693877,
+      "orientation_count": 43,
+      "orientation_rate_pct": 43.87755102040816,
+      "avg_spin_rpm": 68.44427000730447,
+      "median_spin_rpm": 51.48541513628597,
+      "spin_samples": 31
+    },
+    "optical": {
+      "detection_count": 45,
+      "detection_rate_pct": 45.91836734693877,
+      "orientation_count": 39,
+      "orientation_rate_pct": 39.795918367346935,
+      "avg_spin_rpm": 68.23262557410841,
+      "median_spin_rpm": 55.38332011947078,
+      "spin_samples": 44,
+      "avg_flow_confidence": 0.5492448808265264
+    },
+    "saved_frames": {
+      "seam_best": "docs/frames/video1_seam_best.jpg",
+      "optical_best": "docs/frames/video1_optical_best.jpg",
+      "comparison": "docs/frames/video1_comparison.jpg"
+    }
+  },
+  "video2": {
+    "label": "video2",
+    "total_frames": 85,
+    "fps": 30.0,
+    "seam": {
+      "detection_count": 41,
+      "detection_rate_pct": 48.23529411764706,
+      "orientation_count": 41,
+      "orientation_rate_pct": 48.23529411764706,
+      "avg_spin_rpm": 150.26774368518514,
+      "median_spin_rpm": 125.64752504481439,
+      "spin_samples": 35
+    },
+    "optical": {
+      "detection_count": 41,
+      "detection_rate_pct": 48.23529411764706,
+      "orientation_count": 39,
+      "orientation_rate_pct": 45.88235294117647,
+      "avg_spin_rpm": 78.7809530254353,
+      "median_spin_rpm": 79.51742023325166,
+      "spin_samples": 40,
+      "avg_flow_confidence": 0.6336979292993931
+    },
+    "saved_frames": {
+      "seam_best": "docs/frames/video2_seam_best.jpg",
+      "optical_best": "docs/frames/video2_optical_best.jpg",
+      "comparison": "docs/frames/video2_comparison.jpg"
+    }
+  }
+}
