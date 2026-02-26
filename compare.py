@@ -66,8 +66,8 @@ def make_comparison_video(video_path, output_path, K, dist,
         output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (out_w, out_h))
 
     # ---- Tracking stats ----
-    seam_stats = {"detections": 0, "orientations": 0, "spin_rates": [], "times": []}
-    opt_stats = {"detections": 0, "orientations": 0, "spin_rates": [], "times": [],
+    seam_stats = {"detections": 0, "orientations": 0, "times": []}
+    opt_stats = {"detections": 0, "orientations": 0, "times": [],
                  "confidences": []}
 
     frame_idx = 0
@@ -95,16 +95,12 @@ def make_comparison_video(video_path, output_path, K, dist,
             seam_stats["detections"] += 1
         if seam_result["orientation"] is not None:
             seam_stats["orientations"] += 1
-        if seam_result["spin_rate"] is not None:
-            seam_stats["spin_rates"].append(seam_result["spin_rate"])
         seam_stats["times"].append(seam_time)
 
         if opt_result["ball_detected"]:
             opt_stats["detections"] += 1
         if opt_result["orientation"] is not None:
             opt_stats["orientations"] += 1
-        if opt_result["spin_rate"] is not None:
-            opt_stats["spin_rates"].append(opt_result["spin_rate"])
         opt_stats["times"].append(opt_time)
         if opt_result.get("flow_confidence") is not None:
             opt_stats["confidences"].append(opt_result["flow_confidence"])
@@ -147,7 +143,6 @@ def make_comparison_video(video_path, output_path, K, dist,
             "detection_rate": seam_stats["detections"] / frame_idx * 100,
             "orientation_estimated": seam_stats["orientations"],
             "orientation_rate": seam_stats["orientations"] / frame_idx * 100,
-            "avg_spin_rpm": float(np.mean(seam_stats["spin_rates"])) if seam_stats["spin_rates"] else None,
             "avg_time_ms": float(np.mean(seam_stats["times"]) * 1000),
         },
         "optical": {
@@ -155,7 +150,6 @@ def make_comparison_video(video_path, output_path, K, dist,
             "detection_rate": opt_stats["detections"] / frame_idx * 100,
             "orientation_estimated": opt_stats["orientations"],
             "orientation_rate": opt_stats["orientations"] / frame_idx * 100,
-            "avg_spin_rpm": float(np.mean(opt_stats["spin_rates"])) if opt_stats["spin_rates"] else None,
             "avg_confidence": float(np.mean(opt_stats["confidences"])) if opt_stats["confidences"] else None,
             "avg_time_ms": float(np.mean(opt_stats["times"]) * 1000),
         }
@@ -202,13 +196,8 @@ def _draw_seam_viz(frame, result, frame_idx):
                     (10, y_text), font, 0.5, (255, 200, 0), 1)
         y_text += 22
 
-    if result["spin_rate"] is not None:
-        cv2.putText(vis, f"Spin: {result['spin_rate']:.0f} RPM",
-                    (10, y_text), font, 0.6, (0, 255, 255), 2)
-        y_text += 22
-
     # Spin axis arrow
-    if result["spin_axis"] is not None:
+    if result.get("spin_axis") is not None:
         axis = result["spin_axis"]
         cv2.arrowedLine(vis, (cx, cy),
                         (int(cx + axis[0]*60), int(cy + axis[1]*60)),
@@ -253,21 +242,9 @@ def _draw_optical_viz(frame, result, frame_idx):
                     (10, y_text), font, 0.5, (255, 200, 0), 1)
         y_text += 22
 
-    if result["spin_rate"] is not None:
-        cv2.putText(vis, f"Spin: {result['spin_rate']:.0f} RPM",
-                    (10, y_text), font, 0.6, (0, 255, 255), 2)
-        y_text += 22
-
     if result.get("flow_confidence") is not None:
         cv2.putText(vis, f"Confidence: {result['flow_confidence']:.2f}",
                     (10, y_text), font, 0.5, (0, 200, 255), 1)
-
-    # Spin axis arrow
-    if result["spin_axis"] is not None:
-        axis = result["spin_axis"]
-        cv2.arrowedLine(vis, (cx, cy),
-                        (int(cx + axis[0]*60), int(cy + axis[1]*60)),
-                        (255, 0, 255), 3, tipLength=0.3)
 
     return vis
 
@@ -290,7 +267,6 @@ def _draw_stats_bar(width, height, frame_num, total_frames,
     total = frame_num
     det_pct = seam_stats["detections"] / total * 100
     ori_pct = seam_stats["orientations"] / total * 100
-    spin = np.mean(seam_stats["spin_rates"]) if seam_stats["spin_rates"] else 0
 
     cv2.putText(bar, "SEAM STATS", (10, y), font, 0.6, (0, 200, 255), 2)
     y += 28
@@ -299,9 +275,6 @@ def _draw_stats_bar(width, height, frame_num, total_frames,
     y += 22
     cv2.putText(bar, f"Orientation: {seam_stats['orientations']}/{total} ({ori_pct:.0f}%)",
                 (10, y), font, 0.5, (200, 200, 200), 1)
-    y += 22
-    cv2.putText(bar, f"Avg Spin:    {spin:.0f} RPM",
-                (10, y), font, 0.5, (0, 255, 255), 1)
     y += 22
     cv2.putText(bar, f"Frame time:  {seam_time*1000:.0f} ms",
                 (10, y), font, 0.5, (150, 150, 150), 1)
@@ -318,7 +291,6 @@ def _draw_stats_bar(width, height, frame_num, total_frames,
     y = 25
     det_pct = opt_stats["detections"] / total * 100
     ori_pct = opt_stats["orientations"] / total * 100
-    spin = np.mean(opt_stats["spin_rates"]) if opt_stats["spin_rates"] else 0
     conf = np.mean(opt_stats["confidences"]) if opt_stats["confidences"] else 0
 
     cv2.putText(bar, "OPTICAL FLOW STATS", (mid + 10, y), font, 0.6, (255, 200, 0), 2)
@@ -328,9 +300,6 @@ def _draw_stats_bar(width, height, frame_num, total_frames,
     y += 22
     cv2.putText(bar, f"Orientation: {opt_stats['orientations']}/{total} ({ori_pct:.0f}%)",
                 (mid + 10, y), font, 0.5, (200, 200, 200), 1)
-    y += 22
-    cv2.putText(bar, f"Avg Spin:    {spin:.0f} RPM",
-                (mid + 10, y), font, 0.5, (0, 255, 255), 1)
     y += 22
     cv2.putText(bar, f"Avg Conf:    {conf:.2f}  |  Frame: {opt_time*1000:.0f} ms",
                 (mid + 10, y), font, 0.5, (150, 150, 150), 1)
@@ -399,9 +368,6 @@ def main():
         print(f"  {'Frames':<25} {summary['total_frames']:>12}")
         print(f"  {'Ball Detection %':<25} {s['detection_rate']:>11.1f}% {o['detection_rate']:>13.1f}%")
         print(f"  {'Orientation %':<25} {s['orientation_rate']:>11.1f}% {o['orientation_rate']:>13.1f}%")
-        sr_s = f"{s['avg_spin_rpm']:.0f}" if s['avg_spin_rpm'] else "N/A"
-        sr_o = f"{o['avg_spin_rpm']:.0f}" if o['avg_spin_rpm'] else "N/A"
-        print(f"  {'Avg Spin (RPM)':<25} {sr_s:>12} {sr_o:>14}")
         print(f"  {'Avg Time/Frame (ms)':<25} {s['avg_time_ms']:>11.1f} {o['avg_time_ms']:>13.1f}")
         if o['avg_confidence']:
             print(f"  {'Avg Flow Confidence':<25} {'N/A':>12} {o['avg_confidence']:>13.2f}")

@@ -106,9 +106,6 @@ def main():
             print(f"Average flow confidence: "
                   f"{results['average_confidence']:.3f}")
 
-        if results["average_spin_rate"] is not None:
-            print(f"Average spin rate: {results['average_spin_rate']:.1f} RPM")
-
         if args.visualize:
             print(f"\nVisualization saved to: {output_video_path}")
 
