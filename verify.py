@@ -84,13 +84,13 @@ class Report:
 
 
 # ============================================================
-# CHECK 2: Rotation Math Correctness
+# CHECK 1: Rotation Math Correctness
 # ============================================================
 
 def check_rotation_math(report):
     """Verify rotation calculations against OpenCV and SciPy."""
     print("\n" + "="*60)
-    print("CHECK 2: Rotation Math (vs OpenCV & SciPy)")
+    print("CHECK 1: Rotation Math (vs OpenCV & SciPy)")
     print("="*60)
 
     test_axes = [
@@ -142,13 +142,13 @@ def check_rotation_math(report):
 
 
 # ============================================================
-# CHECK 4: Seam Model Geometry
+# CHECK 2: Seam Model Geometry
 # ============================================================
 
 def check_seam_model(report):
     """Verify 3D seam model matches baseball geometry."""
     print("\n" + "="*60)
-    print("CHECK 4: 3D Seam Model Geometry")
+    print("CHECK 2: 3D Seam Model Geometry")
     print("="*60)
 
     model = BaseballSeamModel(radius=BASEBALL_RADIUS_MM)
@@ -174,13 +174,13 @@ def check_seam_model(report):
 
 
 # ============================================================
-# CHECK 5: Seam Detection on Synthetic Image
+# CHECK 3: Seam Detection on Synthetic Image
 # ============================================================
 
 def check_seam_detection(report):
     """Verify seam detection finds red features but not noise."""
     print("\n" + "="*60)
-    print("CHECK 5: Seam Detection (synthetic images)")
+    print("CHECK 3: Seam Detection (synthetic images)")
     print("="*60)
 
     # Image with red circle (simulating seam)
@@ -200,7 +200,7 @@ def check_seam_detection(report):
 
 
 # ============================================================
-# CHECK 6: Physical Consistency Over 5 Consecutive Frames
+# CHECK 4: Physical Consistency Over 5 Consecutive Frames
 # ============================================================
 
 def check_physical_consistency(report, K, dist, videos):
@@ -210,7 +210,7 @@ def check_physical_consistency(report, K, dist, videos):
     angle changes are bounded by physical limits.
     """
     print("\n" + "="*60)
-    print("CHECK 6: Physical Consistency (5 consecutive frames)")
+    print("CHECK 4: Physical Consistency (5 consecutive frames)")
     print("="*60)
 
     for vpath in videos:
@@ -268,13 +268,13 @@ def check_physical_consistency(report, K, dist, videos):
 
 
 # ============================================================
-# CHECK 7: Video Results — Detection, Geometry, Spin Rates
+# CHECK 5: Video Results — Detection, Geometry
 # ============================================================
 
 def check_video_results(report, K, dist, videos):
     """Run seam pipeline on video and check results are physically plausible."""
     print("\n" + "="*60)
-    print("CHECK 7: Video Results - Detection, Geometry, Spin Rates")
+    print("CHECK 5: Video Results - Detection, Geometry")
     print("="*60)
 
     fx = K[0, 0]

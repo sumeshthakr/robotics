@@ -111,7 +111,9 @@ def detect_seams(roi, canny_low=30, canny_high=100):
 
     # If very few red edges, try a relaxed warm-color filter as fallback
     # (handles unusual lighting without falling back to ALL edges)
-    if np.sum(combined) < 20:
+    # Threshold scaled to ROI area — need at least ~0.5% of inner area
+    min_seam_area = max(20, int(h * w * 0.005))
+    if np.sum(combined) < min_seam_area:
         warm_low = cv2.inRange(hsv_boosted,
                                np.array([0, max(10, sat_low - 20),
                                          max(30, val_low - 20)]),
@@ -169,6 +171,7 @@ def estimate_orientation_from_seams(seam_pixels, roi_shape):
     Returns:
         dict with rotation_matrix, seam_angle_deg, seam_tilt_deg — or None
     """
+    # Minimum 6 points: fitEllipse needs ≥5, plus 1 extra for robustness
     if len(seam_pixels) < 6:
         return None
 
@@ -204,7 +207,7 @@ def estimate_orientation_from_seams(seam_pixels, roi_shape):
         angle = angle % 180
         if eigenvalues[0] > 0:
             major_len = np.sqrt(eigenvalues[0])
-            minor_len = np.sqrt(max(eigenvalues[1], 0))
+            minor_len = np.sqrt(max(eigenvalues[1], 1e-10))
         else:
             return None
 
@@ -222,8 +225,10 @@ def estimate_orientation_from_seams(seam_pixels, roi_shape):
         tilt_rad = 0.0
 
     # --- Construct rotation matrix ---
-    # R = Rz(seam_angle) @ Rx(tilt)
-    # This represents: first tilt the seam plane, then rotate in-plane
+    # R = Rz(seam_angle) @ Rx(tilt), where:
+    #   Rz = [[ca, -sa, 0], [sa, ca, 0], [0, 0, 1]]
+    #   Rx = [[1, 0, 0], [0, ct, -st], [0, st, ct]]
+    # Multiplying these gives the matrix below.
     ca, sa = np.cos(seam_angle_rad), np.sin(seam_angle_rad)
     ct, st = np.cos(tilt_rad), np.sin(tilt_rad)
 
