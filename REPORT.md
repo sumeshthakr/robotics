@@ -199,81 +199,63 @@ result = pipeline.process_frame(frame, timestamp=0.0)
 
 ### 3.4 3D Orientation from Seam Segments
 
-**Implementation:** `seam_pipeline.py` — PnP solver + flow-based rotation
+**Implementation:** `seam_pipeline.py` — PCA + ellipse-based orientation estimation
 
-**Approach 1 — PnP (for absolute orientation):**
-We match detected 2D seam pixels to a parametric 3D seam model (`BaseballSeamModel` — two sinusoidal curves spiraling around a sphere with 2.5 revolutions each). Using evenly-spaced correspondences, we solve the Perspective-n-Point problem:
+**Approach — Ellipse fitting on seam pixel distribution:**
 
-```python
-# seam_pipeline.py
-model_3d = seam_model.generate_points(num_points_per_curve=200)
-result = solve_orientation(seam_2d, matched_3d, camera_matrix)
-# Returns rotation matrix, translation vector, inlier count
-```
+Instead of trying to match 2D seam pixels to a 3D model (which requires solving the correspondence problem), we use the statistical distribution of the detected seam pixels to determine orientation:
 
-**Limitation of PnP with approximate correspondences:** Since we don't know which 2D seam pixel corresponds to which 3D model point, the ordered subsampling produces approximate matches. This gives rough absolute orientation but noisy frame-to-frame changes (~126° average error between random rotations).
-
-**Approach 2 — Optical flow on seam features (for spin rate):**
-To get reliable spin rates, we track seam pixels between consecutive frames using Lucas-Kanade optical flow, then estimate the rotation that best explains the observed flow using the rigid-body equation:
-
-$$\mathbf{v} = \boldsymbol{\omega} \times \mathbf{r}$$
-
-Where $\mathbf{r}$ is the 3D position on the sphere (lifted from 2D using known radius) and $\mathbf{v}$ is the observed flow. This gives a linear system in $\boldsymbol{\omega}$, solved with RANSAC for robustness:
+1. **Detect seam pixels** using Canny + HSV red filtering (with circular mask)
+2. **Fit an ellipse** to the seam pixel distribution using `cv2.fitEllipse()`
+3. **Extract orientation** from the ellipse parameters:
+   - **Seam angle** = ellipse rotation angle (in-plane direction of seam)
+   - **Seam tilt** = arccos(minor_axis / major_axis) (out-of-plane tilt)
+4. **Build rotation matrix** R = Rz(seam_angle) × Rx(tilt)
 
 ```python
-# Vectorized system: A @ [ωx, ωy, ωz] = [vx_1, vy_1, ..., vx_N, vy_N]
-A[0::2, 1] = rz           # vx contribution from ωy
-A[0::2, 2] = -ry          # vx contribution from ωz
-A[1::2, 0] = -rz          # vy contribution from ωx
-A[1::2, 2] = rx           # vy contribution from ωz
+# seam_pipeline.py — estimate_orientation_from_seams()
+ellipse = cv2.fitEllipse(seam_pixels)
+(cx, cy), (minor, major), angle = ellipse
+tilt = arccos(minor / major)     # How tilted the seam plane is
+R = Rz(angle) @ Rx(tilt)        # Construct rotation matrix
 ```
+
+This recovers 2 of 3 rotation degrees of freedom from a single frame. The third (spin around the seam plane normal) would require frame-to-frame tracking.
+
+**Why this approach:**
+- Simple and geometrically meaningful
+- No correspondence problem to solve
+- Uses standard OpenCV functions (`fitEllipse`, PCA)
+- Produces valid rotation matrices by construction (product of two rotation matrices)
+- Easy for a student to understand and implement
 
 ### Physical Consistency Check (5 Consecutive Frames)
 
-**Implementation:** `orientation.py` — `OrientationTracker` class
-
-The `OrientationTracker` maintains a **sliding window** of recent orientation measurements and computes spin rate from consecutive pairs:
+The verification script (`verify.py`) checks that frame-to-frame orientation changes are physically plausible:
 
 ```python
 R_relative = R_prev.T @ R_curr     # How much did it rotate?
 angle = ||rotvec(R_relative)||      # Total rotation angle
-RPM = angle / dt × 60 / (2π)       # Convert to RPM
+# At 30fps, max ~90 deg/frame is physical limit
 ```
 
-**Physical consistency enforcement:**
-- **Sliding window** (default 10 frames): Outlier orientations are naturally smoothed
-- **Nyquist check**: At 30fps, maximum measurable spin is 900 RPM — estimates above this are flagged as aliased
-- **Plausibility range**: Hand-tossed baseballs spin at 50–800 RPM; our system validates estimates fall within physical bounds
-- **Accumulated rotation**: Both pipelines accumulate rotation over time (`flow_accumulated_R`), so a single noisy frame doesn't corrupt the trajectory
+### 3.5 Test Case: Rotation Matrix Validity
 
-### 3.5 Test Case: Ball-Local to Camera-Reference Coordinate Transformation
-
-**Implementation:** `test_all.py` — see `TestPnPSolver.test_solve_identity()`
+**Implementation:** `test_all.py` — `TestOrientationEstimation`
 
 ```python
-def test_solve_identity(self):
-    """Project 3D points with known pose, then recover it."""
-    model = BaseballSeamModel(radius=37.0)
-    points_3d = model.generate_points()
-    K = np.array([[1000, 0, 500], [0, 1000, 500], [0, 0, 1]])
-    rvec = np.array([0, 0, 0])          # Identity rotation
-    tvec = np.array([0, 0, 500])        # Ball at 500mm depth
-    
-    # Forward: Ball-Local → Camera frame (project 3D→2D)
-    points_2d, _ = cv2.projectPoints(points_3d, rvec, tvec, K, None)
-    
-    # Inverse: recover pose from 2D observations
-    result = solve_orientation(points_2d, points_3d, K)
-    assert result["success"] is True
-    assert result["rotation_matrix"].shape == (3, 3)
+def test_returns_valid_rotation(self):
+    """Rotation matrix should be proper (det=1, R^T R = I)."""
+    result = estimate_orientation_from_seams(seam_pixels, roi_shape)
+    R = result["rotation_matrix"]
+    assert np.allclose(R.T @ R, np.eye(3), atol=1e-10)  # Orthogonal
+    assert abs(np.linalg.det(R) - 1.0) < 1e-10          # Proper rotation
 ```
 
-Additionally, `verify.py` contains a comprehensive dedicated test in `check_rotation_math()` that validates the Ball-Local → Camera transformation by:
-1. Generating rotation matrices from 24 axis-angle combinations
-2. Verifying each against OpenCV's `cv2.Rodrigues()` (max error < 1e-10)
-3. Verifying each against SciPy's `Rotation.from_rotvec()` (max error < 1e-10)
-4. Confirming orthogonality ($R^T R = I$) and proper rotation ($\det(R) = 1$)
-5. Testing quaternion/Euler roundtrip conversions (20 random rotations)
+Additionally, `verify.py` contains `check_rotation_math()` that validates:
+1. Rotation matrices from 24 axis-angle combinations match OpenCV and SciPy (max error < 1e-10)
+2. Orthogonality ($R^T R = I$) and proper rotation ($\det(R) = 1$)
+3. Quaternion/Euler roundtrip conversions (20 random rotations)
 
 ---
 
@@ -288,9 +270,7 @@ See **AI_COLLABORATION_LOG.md** for the complete log.
 | Metric | Video 1 | Video 2 |
 |--------|---------|---------|
 | Frames | 98 | 85 |
-| Ball Detection Rate | ~95% | ~95% |
+| Ball Detection Rate | ~46% | ~48% |
 | Seam Orientation Rate | ~44% | ~48% |
-| Optical Orientation Rate | ~40% | ~46% |
-| Optical Flow Confidence | 0.549 | 0.634 |
 
-Both pipelines successfully detect ball orientation (rotation matrix / quaternion / Euler angles) across most detected frames.
+The seam pipeline successfully detects ball orientation (rotation matrix / quaternion / Euler angles) on detected frames using ellipse-based seam distribution analysis.
