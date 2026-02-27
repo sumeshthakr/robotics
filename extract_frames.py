@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Extract best detection frames from both pipelines for README documentation.
+"""Extract best detection frames from the seam pipeline for README documentation.
 
-Processes both spin_dataset videos with both approaches and saves:
+Processes spin_dataset videos with the seam-based approach and saves:
   - Best seam detection frames (highest seam pixel count + ball detected)
-  - Best optical flow frames (highest tracked features + ball detected)
-  - Composite comparison frames
   - Per-video JSON metrics
 
 Output is saved to docs/frames/ for use in the README.
@@ -23,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from camera import load_camera_params
 from seam_pipeline import SeamPipeline
-from optical_pipeline import OpticalFlowPipeline
 
 
 OUTPUT_DIR = Path("docs/frames")
@@ -39,20 +36,6 @@ def score_seam_frame(result):
     score = result["num_seam_pixels"]
     if result["orientation"] is not None:
         score += 500
-    return score
-
-
-def score_optical_frame(result):
-    """Score an optical-flow frame — higher = better visual for README."""
-    if not result["ball_detected"]:
-        return -1
-    tf = result.get("tracked_features")
-    tracked = len(tf["prev_points"]) if tf else 0
-    score = tracked * 10
-    if result["orientation"] is not None:
-        score += 500
-    conf = result.get("flow_confidence") or 0
-    score += int(conf * 100)
     return score
 
 
@@ -117,119 +100,10 @@ def annotate_seam_frame(frame, result, frame_idx, video_label):
     return vis
 
 
-def annotate_optical_frame(frame, result, frame_idx, video_label):
-    """Draw rich optical-flow annotations on a frame for README use."""
-    vis = frame.copy()
-    h, w = vis.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    # Header bar
-    cv2.rectangle(vis, (0, 0), (w, 40), (40, 20, 20), -1)
-    cv2.putText(vis, f"OPTICAL FLOW PIPELINE  |  {video_label}  |  Frame {frame_idx}",
-                (10, 28), font, 0.65, (255, 200, 0), 2)
-
-    if not result["ball_detected"]:
-        return vis
-
-    x1, y1, x2, y2 = result["bbox"]
-    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-    rad = max((x2 - x1), (y2 - y1)) // 2
-
-    color = (255, 255, 0) if not result.get("tracking") else (0, 255, 255)
-    cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
-    cv2.circle(vis, (cx, cy), rad, color, 1)
-    cv2.circle(vis, (cx, cy), 4, (255, 0, 0), -1)
-
-    # Flow vectors
-    if result.get("tracked_features"):
-        tracked = result["tracked_features"]
-        for p1, p2 in zip(tracked["prev_points"], tracked["curr_points"]):
-            pt1 = (int(p1[0] + x1), int(p1[1] + y1))
-            pt2 = (int(p2[0] + x1), int(p2[1] + y1))
-            if (0 <= pt1[0] < w and 0 <= pt1[1] < h and
-                    0 <= pt2[0] < w and 0 <= pt2[1] < h):
-                cv2.arrowedLine(vis, pt1, pt2, (0, 255, 255), 1, tipLength=0.4)
-
-    y_txt = 60
-    info_lines = []
-    tf = result.get("tracked_features")
-    if tf:
-        info_lines.append((f"Tracked features: {len(tf['prev_points'])}", (100, 255, 255)))
-    if result.get("confidence"):
-        info_lines.append((f"YOLO conf: {result['confidence']:.2f}", (180, 255, 180)))
-    if result.get("flow_confidence") is not None:
-        info_lines.append((f"Flow conf: {result['flow_confidence']:.2f}", (100, 255, 200)))
-    if result["orientation"]:
-        e = np.degrees(result["orientation"]["euler_angles"])
-        info_lines.append((f"Euler: [{e[0]:.1f}, {e[1]:.1f}, {e[2]:.1f}] deg",
-                           (255, 200, 100)))
-        q = result["orientation"]["quaternion"]
-        info_lines.append((f"Quat: [{q[0]:.2f}, {q[1]:.2f}, {q[2]:.2f}, {q[3]:.2f}]",
-                           (255, 200, 100)))
-
-    for text, col in info_lines:
-        cv2.putText(vis, text, (10, y_txt), font, 0.55, col, 1)
-        y_txt += 22
-
-    if result["spin_axis"] is not None:
-        axis = result["spin_axis"]
-        end_x = int(cx + axis[0] * 70)
-        end_y = int(cy + axis[1] * 70)
-        cv2.arrowedLine(vis, (cx, cy), (end_x, end_y), (255, 0, 255), 3, tipLength=0.3)
-        cv2.putText(vis, "spin axis", (end_x + 5, end_y), font, 0.4, (255, 0, 255), 1)
-
-    return vis
-
-
-def make_comparison_frame(seam_frame, optical_frame, seam_result, opt_result,
-                          video_label, frame_idx, total_frames):
-    """Create a side-by-side comparison frame with a stats bar."""
-    target_h = 480
-    target_w_half = 640
-
-    left = cv2.resize(seam_frame, (target_w_half, target_h))
-    right = cv2.resize(optical_frame, (target_w_half, target_h))
-
-    # Divider
-    divider = np.zeros((target_h, 4, 3), dtype=np.uint8)
-    divider[:] = (120, 120, 120)
-    combined = np.hstack([left, divider, right])
-
-    # Stats bar
-    bar_h = 100
-    bar = np.zeros((bar_h, combined.shape[1], 3), dtype=np.uint8)
-    bar[:] = (25, 25, 40)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    mid = combined.shape[1] // 2
-
-    cv2.putText(bar, f"{video_label}  |  Frame {frame_idx}/{total_frames}",
-                (10, 22), font, 0.55, (200, 200, 200), 1)
-    cv2.line(bar, (mid, 0), (mid, bar_h), (80, 80, 80), 1)
-
-    # Seam stats
-    s_seam = str(seam_result.get("num_seam_pixels", 0))
-    cv2.putText(bar, f"SEAM: {s_seam} px",
-                (10, 55), font, 0.55, (0, 200, 255), 1)
-    cv2.putText(bar, "Seam detection + PnP",
-                (10, 80), font, 0.4, (150, 150, 150), 1)
-
-    # Optical stats
-    tf = opt_result.get("tracked_features")
-    o_pts = str(len(tf["prev_points"])) if tf else "0"
-    o_conf = f"{opt_result['flow_confidence']:.2f}" if opt_result.get("flow_confidence") else "—"
-    cv2.putText(bar, f"OPTICAL: {o_pts} pts | conf {o_conf}",
-                (mid + 10, 55), font, 0.55, (255, 200, 0), 1)
-    cv2.putText(bar, "Corner features + Lucas-Kanade",
-                (mid + 10, 80), font, 0.4, (150, 150, 150), 1)
-
-    return np.vstack([combined, bar])
-
-
 def process_video(video_path, label, K, dist):
     """Process one video, return best frames and metrics."""
-    print(f"\n  [{label}] Initializing pipelines...")
+    print(f"\n  [{label}] Initializing pipeline...")
     seam_pipe = SeamPipeline(K, dist, confidence=CONFIDENCE, model_path=MODEL_PATH)
-    opt_pipe = OpticalFlowPipeline(K, dist, confidence=CONFIDENCE, model_path=MODEL_PATH)
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -242,14 +116,9 @@ def process_video(video_path, label, K, dist):
 
     # Best-frame tracking
     best_seam = {"score": -1, "frame": None, "result": None, "idx": 0}
-    best_optical = {"score": -1, "frame": None, "result": None, "idx": 0}
-    best_comparison = {"score": -1, "seam_frame": None, "opt_frame": None,
-                       "seam_result": None, "opt_result": None, "idx": 0}
 
     # Metrics
     seam_detections = seam_orientations = 0
-    opt_detections = opt_orientations = 0
-    opt_confs = []
 
     frame_idx = 0
     while True:
@@ -260,7 +129,6 @@ def process_video(video_path, label, K, dist):
         timestamp = frame_idx / fps
 
         sr = seam_pipe.process_frame(frame.copy(), timestamp)
-        or_ = opt_pipe.process_frame(frame.copy(), timestamp)
 
         # Accumulate metrics
         if sr["ball_detected"]:
@@ -268,31 +136,11 @@ def process_video(video_path, label, K, dist):
         if sr["orientation"] is not None:
             seam_orientations += 1
 
-        if or_["ball_detected"]:
-            opt_detections += 1
-        if or_["orientation"] is not None:
-            opt_orientations += 1
-        if or_.get("flow_confidence") is not None:
-            opt_confs.append(or_["flow_confidence"])
-
         # Track best frames
         ss = score_seam_frame(sr)
         if ss > best_seam["score"]:
             best_seam = {"score": ss, "frame": frame.copy(),
                          "result": sr, "idx": frame_idx}
-
-        os_ = score_optical_frame(or_)
-        if os_ > best_optical["score"]:
-            best_optical = {"score": os_, "frame": frame.copy(),
-                            "result": or_, "idx": frame_idx}
-
-        combined_score = ss + os_
-        if combined_score > best_comparison["score"]:
-            best_comparison = {
-                "score": combined_score,
-                "seam_frame": frame.copy(), "opt_frame": frame.copy(),
-                "seam_result": sr, "opt_result": or_, "idx": frame_idx
-            }
 
         frame_idx += 1
         if frame_idx % 20 == 0:
@@ -310,24 +158,13 @@ def process_video(video_path, label, K, dist):
             "orientation_count": seam_orientations,
             "orientation_rate_pct": 100.0 * seam_orientations / max(frame_idx, 1),
         },
-        "optical": {
-            "detection_count": opt_detections,
-            "detection_rate_pct": 100.0 * opt_detections / max(frame_idx, 1),
-            "orientation_count": opt_orientations,
-            "orientation_rate_pct": 100.0 * opt_orientations / max(frame_idx, 1),
-            "avg_flow_confidence": float(np.mean(opt_confs)) if opt_confs else None,
-        }
     }
 
     print(f"  [{label}] Seam: {seam_detections}/{frame_idx} detected, "
           f"{seam_orientations} orientation estimates")
-    print(f"  [{label}] Optical: {opt_detections}/{frame_idx} detected, "
-          f"{opt_orientations} orientation estimates")
 
     return {
         "best_seam": best_seam,
-        "best_optical": best_optical,
-        "best_comparison": best_comparison,
         "metrics": metrics,
         "total_frames": frame_idx,
         "fps": fps,
@@ -351,29 +188,6 @@ def save_frames(data, label, output_dir):
         saved["seam_best"] = str(path)
         print(f"  Saved: {path}")
 
-    # Best optical frame
-    bo = data["best_optical"]
-    if bo["frame"] is not None:
-        ann = annotate_optical_frame(bo["frame"], bo["result"], bo["idx"], label)
-        ann = _scale_down(ann, max_w=1200)
-        path = output_dir / f"{label}_optical_best.jpg"
-        cv2.imwrite(str(path), ann, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        saved["optical_best"] = str(path)
-        print(f"  Saved: {path}")
-
-    # Best comparison frame (side-by-side)
-    bc = data["best_comparison"]
-    if bc["seam_frame"] is not None:
-        comp = make_comparison_frame(
-            bc["seam_frame"], bc["opt_frame"],
-            bc["seam_result"], bc["opt_result"],
-            label, bc["idx"], data["total_frames"]
-        )
-        path = output_dir / f"{label}_comparison.jpg"
-        cv2.imwrite(str(path), comp, [cv2.IMWRITE_JPEG_QUALITY, 90])
-        saved["comparison"] = str(path)
-        print(f"  Saved: {path}")
-
     return saved
 
 
@@ -389,7 +203,7 @@ def _scale_down(img, max_w=1200):
 def main():
     import argparse
     parser = argparse.ArgumentParser(
-        description="Extract best detection frames from both pipelines for documentation.")
+        description="Extract best detection frames from the seam pipeline for documentation.")
     parser.add_argument(
         "--videos", nargs="*",
         default=[
@@ -440,10 +254,6 @@ def main():
     print("\n" + "=" * 70)
     print(f"{'Metric':<30} {'Video 1':>18} {'Video 2':>18}")
     print("-" * 70)
-    for k in ["seam", "optical"]:
-        for v in ["video1", "video2"]:
-            if v not in all_metrics:
-                all_metrics[v] = {}
     if all_metrics:
         v1 = all_metrics.get("video1", {})
         v2 = all_metrics.get("video2", {})
@@ -451,9 +261,6 @@ def main():
             ("Frames", "total_frames", None),
             ("Seam Detection %", "seam.detection_rate_pct", ".1f"),
             ("Seam Orientation %", "seam.orientation_rate_pct", ".1f"),
-            ("Optical Detection %", "optical.detection_rate_pct", ".1f"),
-            ("Optical Orientation %", "optical.orientation_rate_pct", ".1f"),
-            ("Optical Avg Confidence", "optical.avg_flow_confidence", ".3f"),
         ]
         for name, key, fmt in rows:
             def _get(d, k):

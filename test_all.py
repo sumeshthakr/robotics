@@ -1,7 +1,7 @@
 """Consolidated tests for the baseball orientation detection pipeline.
 
 Tests all components: camera, detector, seam detection, seam model,
-PnP solver, orientation tracker, and both pipelines.
+orientation estimation, and the seam pipeline.
 
 Run with:  pytest test_all.py -v
 """
@@ -15,9 +15,9 @@ from camera import load_camera_params, undistort
 from detector import BallDetector, BallTracker
 from orientation import (rotation_to_quaternion,
                          rotation_to_euler)
-from seam_pipeline import (detect_seams, BaseballSeamModel, solve_orientation,
+from seam_pipeline import (detect_seams, BaseballSeamModel,
+                           estimate_orientation_from_seams,
                            SeamPipeline)
-from optical_pipeline import RotationEstimator, OpticalFlowPipeline
 
 CAMERA_CONFIG = "config/camera.json"
 
@@ -195,31 +195,75 @@ class TestSeamModel:
 
 
 # ============================================================
-# PnP Solver Tests
+# Orientation Estimation Tests
 # ============================================================
 
-class TestPnPSolver:
-    def test_solve_identity(self):
-        """Project 3D points with known pose, then recover it."""
-        model = BaseballSeamModel(radius=37.0)
-        points_3d = model.generate_points()
-        K = np.array([[1000, 0, 500], [0, 1000, 500], [0, 0, 1]],
-                     dtype=np.float64)
-        rvec = np.array([0, 0, 0], dtype=np.float64)
-        tvec = np.array([0, 0, 500], dtype=np.float64)
+class TestOrientationEstimation:
+    def test_returns_none_for_few_points(self):
+        """Need at least 6 points for ellipse fitting."""
+        pts = np.array([[10, 10], [20, 20], [30, 30]])
+        result = estimate_orientation_from_seams(pts, (200, 200))
+        assert result is None
 
-        points_2d, _ = cv2.projectPoints(points_3d, rvec, tvec, K, None)
-        points_2d = points_2d.reshape(-1, 2)
-
-        result = solve_orientation(points_2d, points_3d, K)
+    def test_returns_valid_rotation(self):
+        """Rotation matrix should be proper (det=1, R^T R = I)."""
+        # Create seam pixels in an elongated elliptical pattern
+        angles = np.linspace(0, 2 * np.pi, 50)
+        pts = np.column_stack([
+            100 + 40 * np.cos(angles),  # x
+            100 + 20 * np.sin(angles),  # y (half the spread → tilted)
+        ]).astype(np.float32)
+        result = estimate_orientation_from_seams(pts, (200, 200))
+        assert result is not None
         assert result["success"] is True
-        assert result["rotation_matrix"].shape == (3, 3)
-        assert result["tvec"] is not None
+        R = result["rotation_matrix"]
+        assert R.shape == (3, 3)
+        # Check orthogonality: R^T R = I
+        assert np.allclose(R.T @ R, np.eye(3), atol=1e-10)
+        # Check proper rotation: det(R) = 1
+        assert abs(np.linalg.det(R) - 1.0) < 1e-10
 
-    def test_too_few_points(self):
-        K = np.eye(3) * 1000
-        result = solve_orientation(np.zeros((2, 2)), np.zeros((2, 3)), K)
-        assert result["success"] is False
+    def test_angle_changes_with_direction(self):
+        """Seam angle should change when seam direction changes."""
+        # Horizontal seam
+        pts_h = np.column_stack([
+            np.linspace(20, 180, 50),
+            100 + np.random.randn(50) * 3,
+        ]).astype(np.float32)
+        result_h = estimate_orientation_from_seams(pts_h, (200, 200))
+
+        # Vertical seam
+        pts_v = np.column_stack([
+            100 + np.random.randn(50) * 3,
+            np.linspace(20, 180, 50),
+        ]).astype(np.float32)
+        result_v = estimate_orientation_from_seams(pts_v, (200, 200))
+
+        assert result_h is not None and result_v is not None
+        # Angles should be different (roughly 90° apart)
+        angle_diff = abs(result_h["seam_angle_deg"] - result_v["seam_angle_deg"])
+        assert 45 < angle_diff < 135, f"Angle difference: {angle_diff}"
+
+    def test_tilt_from_axis_ratio(self):
+        """Circular spread → low tilt, elongated → high tilt."""
+        # Circular distribution (face-on seam)
+        angles = np.linspace(0, 2 * np.pi, 50)
+        pts_circle = np.column_stack([
+            100 + 40 * np.cos(angles),
+            100 + 40 * np.sin(angles),
+        ]).astype(np.float32)
+        result_c = estimate_orientation_from_seams(pts_circle, (200, 200))
+
+        # Elongated distribution (tilted seam)
+        pts_elongated = np.column_stack([
+            100 + 40 * np.cos(angles),
+            100 + 10 * np.sin(angles),
+        ]).astype(np.float32)
+        result_e = estimate_orientation_from_seams(pts_elongated, (200, 200))
+
+        assert result_c is not None and result_e is not None
+        # Elongated should have higher tilt than circular
+        assert result_e["seam_tilt_deg"] > result_c["seam_tilt_deg"]
 
 
 # ============================================================
@@ -244,102 +288,6 @@ class TestConversions:
         # 90° about Z → q ≈ [cos(45°), 0, 0, sin(45°)]
         assert q[0] == pytest.approx(np.cos(np.pi / 4), abs=0.01)
         assert abs(q[3]) == pytest.approx(np.sin(np.pi / 4), abs=0.01)
-
-
-# ============================================================
-# Rotation Estimator Tests (Optical Flow)
-# ============================================================
-
-class TestRotationEstimator:
-    @pytest.fixture
-    def estimator(self):
-        K = np.array([[800, 0, 320], [0, 800, 240], [0, 0, 1]],
-                     dtype=np.float64)
-        return RotationEstimator(K, ball_radius_mm=37.0, max_corners=50,
-                                 min_flow=0.3, max_flow=40.0)
-
-    def _make_rotating_frame(self, center, radius, rotation_deg, size=(480, 640)):
-        """Create a synthetic frame with a rotating pattern inside a circle."""
-        frame = np.ones(size, dtype=np.uint8) * 180
-        cv2.circle(frame, center, radius, 100, -1)
-        cv2.circle(frame, center, radius, 50, 2)
-
-        # Draw multiple ring patterns and radial lines that rotate
-        for ring_frac in [0.3, 0.5, 0.7, 0.9]:
-            ring_r = int(radius * ring_frac)
-            for angle_offset in [0, 90, 180, 270]:
-                start = rotation_deg + angle_offset
-                for a in range(start, start + 45, 5):
-                    rad = np.radians(a)
-                    x = int(center[0] + ring_r * np.cos(rad))
-                    y = int(center[1] + ring_r * np.sin(rad))
-                    cv2.circle(frame, (x, y), 3, 40, -1)
-
-        for j in range(12):
-            angle = np.radians(rotation_deg + j * 30)
-            x1 = int(center[0] + 0.2 * radius * np.cos(angle))
-            y1 = int(center[1] + 0.2 * radius * np.sin(angle))
-            x2 = int(center[0] + 0.9 * radius * np.cos(angle))
-            y2 = int(center[1] + 0.9 * radius * np.sin(angle))
-            cv2.line(frame, (x1, y1), (x2, y2), 60, 2)
-
-        for j in range(6):
-            angle = np.radians(rotation_deg + j * 60)
-            x = int(center[0] + 0.7 * radius * np.cos(angle))
-            y = int(center[1] + 0.7 * radius * np.sin(angle))
-            cv2.line(frame, (x - 5, y), (x + 5, y), 40, 2)
-            cv2.line(frame, (x, y - 5), (x, y + 5), 40, 2)
-
-        return frame
-
-    def test_init(self, estimator):
-        assert estimator.prev_gray is None
-        assert estimator.prev_points is None
-
-    def test_reset(self, estimator):
-        estimator.accumulated_rotation = np.eye(3) * 2
-        estimator.reset()
-        assert estimator.prev_gray is None
-        assert np.allclose(estimator.accumulated_rotation, np.eye(3))
-
-    def test_first_frame_returns_none(self, estimator):
-        """First frame initializes state, can't compute flow yet."""
-        frame = self._make_rotating_frame((320, 240), 80, 0)
-        result = estimator.estimate_rotation(frame, (240, 160, 400, 320))
-        assert result is None
-        assert estimator.prev_gray is not None  # State was initialized
-
-    def test_consecutive_frames(self, estimator):
-        """Process multiple frames with a rotating pattern.
-
-        NOTE: Optical flow estimation works best with real video textures.
-        With synthetic images, the RANSAC may not always find enough
-        consistent inliers. This test verifies the pipeline doesn't crash
-        and validates any results it does produce.
-        """
-        center = (320, 240)
-        radius = 80
-        bbox = (center[0] - radius, center[1] - radius,
-                center[0] + radius, center[1] + radius)
-
-        for i in range(20):
-            frame = self._make_rotating_frame(center, radius, i * 15)
-            result = estimator.estimate_rotation(frame, bbox, timestamp=i * 0.033)
-
-            if result is not None:
-                # Validate structure when we do get a result
-                assert "rotation_matrix" in result
-                assert "spin_axis" in result
-                assert "confidence" in result
-                R = result["rotation_matrix"]
-                assert R.shape == (3, 3)
-                assert np.allclose(R.T @ R, np.eye(3), atol=0.2)
-                assert abs(np.linalg.det(R) - 1.0) < 0.2
-                break  # One valid result is enough
-
-        # At minimum, state should be initialized after processing frames
-        assert estimator.prev_gray is not None
-        assert estimator.prev_points is not None
 
 
 # ============================================================
@@ -375,63 +323,3 @@ class TestSeamPipeline:
         pipeline.frame_count = 10
         pipeline.reset()
         assert pipeline.frame_count == 0
-
-
-# ============================================================
-# Optical Flow Pipeline Tests
-# ============================================================
-
-class TestOpticalFlowPipeline:
-    @pytest.fixture
-    def pipeline(self):
-        K = np.array([[1000, 0, 640], [0, 1000, 360], [0, 0, 1]],
-                     dtype=np.float64)
-        dist = np.zeros((1, 5))
-        return OpticalFlowPipeline(K, dist, confidence=0.25)
-
-    def test_init(self, pipeline):
-        assert pipeline is not None
-        assert pipeline.frame_count == 0
-
-    def test_process_frame_no_ball(self, pipeline):
-        frame = np.ones((720, 1280, 3), dtype=np.uint8) * 255
-        with patch.object(pipeline.detector, 'detect',
-                          return_value={"detected": False, "bbox": None,
-                                        "confidence": None}):
-            result = pipeline.process_frame(frame, timestamp=0.0)
-        assert result["ball_detected"] is False
-        assert result["orientation"] is None
-        assert result["spin_rate"] is None
-
-    def test_result_structure(self, pipeline):
-        frame = np.ones((720, 1280, 3), dtype=np.uint8) * 128
-        with patch.object(pipeline.detector, 'detect',
-                          return_value={"detected": False, "bbox": None,
-                                        "confidence": None}):
-            result = pipeline.process_frame(frame)
-
-        expected_keys = {"ball_detected", "bbox", "confidence", "orientation",
-                         "spin_rate", "spin_axis", "frame_number", "timestamp",
-                         "flow_confidence"}
-        assert expected_keys.issubset(set(result.keys()))
-
-    def test_process_video_not_found(self, pipeline):
-        with pytest.raises(FileNotFoundError):
-            pipeline.process_video("/nonexistent/video.mp4")
-
-    def test_consecutive_failures_reset(self, pipeline):
-        frame = np.ones((720, 1280, 3), dtype=np.uint8) * 128
-        with patch.object(pipeline.detector, 'detect',
-                          return_value={"detected": False, "bbox": None,
-                                        "confidence": None}):
-            for _ in range(10):
-                pipeline.process_frame(frame, timestamp=0.0)
-        # After many failures, estimator should have been reset
-        assert pipeline._consecutive_failures > 5
-
-    def test_reset(self, pipeline):
-        pipeline.frame_count = 10
-        pipeline._consecutive_failures = 8
-        pipeline.reset()
-        assert pipeline.frame_count == 0
-        assert pipeline._consecutive_failures == 0

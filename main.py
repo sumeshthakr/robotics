@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """Baseball Orientation Detection — Main Entry Point
 
-Detects baseball orientation from high-speed video using either:
-  - Seam-based approach:    detect red seams → 3D model matching → PnP solve
-  - Optical flow approach:  track surface features → estimate rotation
+Detects baseball orientation from high-speed video using seam-based approach:
+  - Detect red seams → estimate orientation from seam distribution
 
 Usage:
     python main.py video.mp4 --visualize
-    python main.py video.mp4 --approach optical --visualize
 """
 import argparse
 from pathlib import Path
 from camera import load_camera_params
 from seam_pipeline import SeamPipeline
-from optical_pipeline import OpticalFlowPipeline
 
 
 def main():
@@ -29,15 +26,6 @@ def main():
                         help="YOLO model path (default: yolov8n.pt)")
     parser.add_argument("--confidence", type=float, default=0.25,
                         help="Detection confidence threshold 0-1 (default: 0.25)")
-    parser.add_argument("--approach", choices=["seam", "optical"], default="seam",
-                        help="Approach: seam (default) or optical flow")
-    # Optical flow specific options
-    parser.add_argument("--max-corners", type=int, default=50,
-                        help="Max corners for optical flow (default: 50)")
-    parser.add_argument("--min-flow", type=float, default=0.5,
-                        help="Min flow magnitude in pixels (default: 0.5)")
-    parser.add_argument("--max-flow", type=float, default=30.0,
-                        help="Max flow magnitude in pixels (default: 30.0)")
 
     args = parser.parse_args()
 
@@ -61,19 +49,11 @@ def main():
         return 1
 
     # Create pipeline
-    approach_name = "seam-based" if args.approach == "seam" else "optical flow"
-    print(f"Using {approach_name} approach with {args.model}")
+    print(f"Using seam-based approach with {args.model}")
 
-    if args.approach == "optical":
-        pipeline = OpticalFlowPipeline(
-            K, dist, confidence=args.confidence, model_path=args.model,
-            max_corners=args.max_corners, min_flow=args.min_flow,
-            max_flow=args.max_flow
-        )
-    else:
-        pipeline = SeamPipeline(
-            K, dist, confidence=args.confidence, model_path=args.model
-        )
+    pipeline = SeamPipeline(
+        K, dist, confidence=args.confidence, model_path=args.model
+    )
 
     # Process video
     output_video_path = None
@@ -95,16 +75,11 @@ def main():
                           if r["orientation"] is not None)
 
         print(f"\n=== Results ===")
-        print(f"Approach: {approach_name}")
         print(f"Frames: {total} ({results['fps']:.1f} FPS)")
         print(f"Ball detected: {detections}/{total} "
               f"({100*detections/total:.1f}%)")
         print(f"Orientation estimated: {orientations}/{total} "
               f"({100*orientations/total:.1f}%)")
-
-        if args.approach == "optical" and results.get("average_confidence"):
-            print(f"Average flow confidence: "
-                  f"{results['average_confidence']:.3f}")
 
         if args.visualize:
             print(f"\nVisualization saved to: {output_video_path}")
