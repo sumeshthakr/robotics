@@ -89,14 +89,6 @@ def annotate_seam_frame(frame, result, frame_idx, video_label):
         cv2.putText(vis, text, (10, y_txt), font, 0.55, col, 1)
         y_txt += 22
 
-    # Spin-axis arrow
-    if result["spin_axis"] is not None:
-        axis = result["spin_axis"]
-        end_x = int(cx + axis[0] * 70)
-        end_y = int(cy + axis[1] * 70)
-        cv2.arrowedLine(vis, (cx, cy), (end_x, end_y), (255, 0, 255), 3, tipLength=0.3)
-        cv2.putText(vis, "spin axis", (end_x + 5, end_y), font, 0.4, (255, 0, 255), 1)
-
     return vis
 
 
